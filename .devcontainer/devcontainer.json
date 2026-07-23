@@ -1,0 +1,28 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/python
+{
+	"name": "Python 3",
+	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
+	"build": { "dockerfile": "Dockerfile" },
+
+	"features": {
+		"ghcr.io/devcontainers/features/conda:1": {}
+	},
+
+	"runArgs": ["--gpus=all"],
+
+	"mounts": [
+		"source=mscproject-conda-envs,target=/opt/conda,type=volume"
+	],
+
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ms-python.python",
+				"ms-toolsai.jupyter"
+			]
+		}
+	},
+
+	"postCreateCommand": "conda env create -f .devcontainer/environment_linux.yml && MAX_JOBS=4 TORCH_CUDA_ARCH_LIST='7.5;8.0;8.6;8.9+PTX' conda run -n Msc2 pip install --no-build-isolation git+https://github.com/nerfstudio-project/gsplat.git && conda run -n Msc2 python -m ipykernel install --user --name Msc2 --display-name Msc2"
+}

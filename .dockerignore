@@ -1,0 +1,18 @@
+# Dockerfile.standalone is built from the repo root context, but only needs
+# .devcontainer/ and Models/mega-sam/. Exclude everything else by default so
+# the rest of the workspace (other Models/, Data/, Experiments/, .venv, etc.)
+# isn't sent to the Docker daemon.
+*
+!.devcontainer
+!.devcontainer/**
+!Models
+!Models/mega-sam
+!Models/mega-sam/**
+
+# Re-exclude mega-sam cruft that's either rebuilt during the image build
+# (compiled extensions) or just old local demo-run output, not needed to run.
+Models/mega-sam/base/build
+Models/mega-sam/outputs
+Models/mega-sam/outputs_cvd
+Models/mega-sam/reconstructions
+Models/mega-sam/cache_flow

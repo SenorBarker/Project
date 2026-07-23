@@ -1,0 +1,57 @@
+# Self-contained image for deployment / Singularity conversion.
+# Unlike Dockerfile (used by VS Code's devcontainer), this bakes the conda
+# feature and postCreateCommand steps from devcontainer.json into RUN layers,
+# since plain `docker build` (and Singularity) know nothing about devcontainer
+# features or postCreateCommand. It also bakes in Models/mega-sam (code +
+# its own `mega_sam` conda env + compiled CUDA extensions + checkpoints/demo
+# data) so MegaSaM runs from this image alone, with no devcontainer volume
+# or bind mount required.
+#
+# Build (context must be the repo root, so Models/mega-sam is in scope; see
+# the repo-root .dockerignore for what's actually sent to the daemon):
+#   docker build -f .devcontainer/Dockerfile.standalone -t msc2-image:latest .
+FROM mcr.microsoft.com/devcontainers/python:1-3.12-bullseye
+
+WORKDIR /workspace
+
+RUN rm -f /etc/apt/sources.list.d/yarn.list && \
+    apt-get update && apt-get install -y \
+    git \
+    build-essential \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV CONDA_DIR=/opt/conda
+RUN wget -q https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O /tmp/miniforge.sh && \
+    bash /tmp/miniforge.sh -b -p $CONDA_DIR && \
+    rm /tmp/miniforge.sh
+ENV PATH=$CONDA_DIR/envs/Msc2/bin:$CONDA_DIR/bin:$PATH
+
+COPY .devcontainer/environment_linux.yml /tmp/environment_linux.yml
+RUN conda env create -f /tmp/environment_linux.yml && conda clean -afy
+
+# 7.5/8.0/8.6/8.9 cover the lab fleet's Turing/Ampere/Ada GPUs (RTX 30/40-series
+# only - Maxwell/Titan X is out of scope); +PTX on 8.9 keeps this
+# forward-compatible with anything newer than Ada. Maxwell (5.2) was tried and
+# dropped: gsplat's kernels use cooperative_groups features gated behind
+# __CUDA_ARCH__ >= 700 (Volta+), so they hard-fail to compile for sm_52 with a
+# "namespace has no member" error - not a flag/version issue, gsplat just can't
+# target Maxwell (confirmed via a failed build attempt).
+#
+# MAX_JOBS=1: a build attempt with MAX_JOBS=4 killed the Docker Desktop engine
+# mid-compile (rpc EOF) - same OOM failure mode setup_linux_env.sh already hit
+# compiling lietorch_gpu.cu, for the same reason (heavily-templated CUDA files
+# peak several GB RSS per parallel job in cicc).
+RUN MAX_JOBS=1 TORCH_CUDA_ARCH_LIST='7.5;8.0;8.6;8.9+PTX' \
+    conda run -n Msc2 pip install --no-build-isolation git+https://github.com/nerfstudio-project/gsplat.git && \
+    conda run -n Msc2 python -m ipykernel install --user --name Msc2 --display-name Msc2
+
+# Bake in MegaSaM: its own conda env (CUDA 11.8/torch 2.0.1), compiled
+# droid_backends/lietorch_backends extensions, and checkpoints/demo data.
+# setup_linux_env.sh is idempotent and skips anything already present in the
+# copied tree (checkpoints, demo data) - it only needs to create the env and
+# (re)compile the CUDA extensions against base/setup.py's gencode list.
+COPY Models/mega-sam /workspace/Models/mega-sam
+RUN bash /workspace/Models/mega-sam/setup_linux_env.sh
+
+CMD ["/bin/bash"]

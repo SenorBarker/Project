@@ -1,0 +1,27 @@
+# Secrets
+.env
+
+# Python bytecode cache
+__pycache__/
+*.pyc
+
+# Editor / tool local state
+.vs/
+.obsidian/
+.claude/settings.local.json
+
+# Large data / model / working directories -- not meant for GitHub
+Data/
+Models/
+colmap/
+
+# Adobe Premiere Elements project files
+Layouts/
+Prem/
+
+# Generated outputs (renders, debug images) and logs -- not source
+*.png
+build.log
+
+# Scratch notebook
+Untitled-1.ipynb
