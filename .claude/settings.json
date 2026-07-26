@@ -4,7 +4,8 @@
       "Bash(conda install *)",
       "Bash(python -c \"import sys; print\\(sys.executable\\)\")",
       "Bash(pip show *)",
-      "Bash(/opt/conda/envs/Msc2/bin/python -c ' *)"
+      "Bash(/opt/conda/envs/Msc2/bin/python -c ' *)",
+      "Bash(python3 -c ' *)"
     ],
     "additionalDirectories": [
       "/tmp"

@@ -189,8 +189,7 @@ revised result under the plain (non-`_draft`) name.
       "quote": null,
       "rationale": "R6.1 ...",
       "rejected_alternative": null,
-      "flag": null,
-      "tracked_subject": null
+      "flag": null
     }
   ]
 }
@@ -203,15 +202,8 @@ are populated and `search_window_start_seconds`/`search_window_end_seconds` are
 above. For `segment_type: "synthetic"`, all six of `cut_mode`, `start_frame`,
 `end_frame`, `lead_in_seconds`, `search_window_start_seconds`,
 `search_window_end_seconds` are `null` — cut-point mechanics don't apply to
-generated assets — **except** a `MASK_OVERLAYS` beat with `tracked_subject`
-set: that beat comes from real footage (a mask burned onto the source
-video, not a generated animation), so it still needs `cut_mode:
-"auto_select"` like a real beat, even though `segment_type` stays
-`"synthetic"`. `start_frame`/`end_frame`/`search_window_start_seconds`/
-`search_window_end_seconds`/`lead_in_seconds` stay `null` on it regardless —
-the deterministic cut-point step resolves its in/out from the tracked
-subject's mask span, not a search window you provide. Never drop a key, and
-never fold its value into `source`'s prose instead of setting it directly.
+generated assets. Never drop a key, and never fold its value into `source`'s
+prose instead of setting it directly.
 
 Field rules per beat:
 - `segment_type: "real"` → `source` is required, `asset_request` and
@@ -222,9 +214,6 @@ Field rules per beat:
   multiple feasible methods exist for the same request (e.g. `CUT3R_RECON`
   vs. `VGGT_O_RECON`), list every candidate — the Assistant narrows it down,
   not you.
-- `tracked_subject` — `null` on every beat except a `MASK_OVERLAYS` synthetic
-  beat requested per "Visual confirmation requests" below, where it is
-  required. Never populated on a real beat.
 - `quote` — required for any beat with usable synced dialogue relevant to the
   subject (R4.1), not just `SOUNDBITE` beats — e.g. a real segment where the
   wearer/subject is talking about the subject on mic. `null` only when the
@@ -235,26 +224,6 @@ Field rules per beat:
   alternative plus the rule ID that ruled it out (R7.1).
 - `flag` — `"[JUDGMENT CALL]"`, `"[NEEDS VISUAL REVIEW]"`, or `null`. No
   fourth option.
-
-# Visual confirmation requests
-
-If any beat's subject has timecoded
-appearances in OBJECTS, add a companion synthetic beat requesting a mask
-overlay for it (normal synthetic-beat rules: `asset_request` describes it,
-`requested_flags: ["MASK_OVERLAYS"]`, `source: null`). That beat also sets
-`cut_mode: "auto_select"` (see "Segment types & duration" above — the one
-exception to synthetic beats otherwise leaving `cut_mode` null) and
-`tracked_subject`:
-```json
-"tracked_subject": {
-  "subject": "gun",
-  "spans": [{"start_s": 147, "end_s": 155}]
-}
-```
-`subject` is a bare noun (no articles/descriptors). `spans` covers only the
-OBJECTS timecode(s) that fall within the beat's own time range — not every
-appearance across the whole video.
-No timecodes in OBJECTS → can't request this, flag `[JUDGMENT CALL]` instead.
 
 That's the only file you write. Do **not** separately write a flags file —
 `requested_flags` on each beat is all the information needed, and a

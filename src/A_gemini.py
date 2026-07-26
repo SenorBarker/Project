@@ -40,7 +40,7 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
 
     response2 = client.models.generate_content(
         model="gemini-3.5-flash",
-        contents="What objects are visible and when? Provde times. don't subdivide the same object into multiple times unless there is a long gap" + FORMAT_SUFFIX,
+        contents=f"summary of the video:{response.text} \n\nQuestion:What objects, pertinent to the summary are visible and when? Provde times. don't subdivide the same object into multiple times unless there is a long gap" + FORMAT_SUFFIX,
         config=types.GenerateContentConfig(cached_content=cache[case_name].name)
     )
     print(response2.text)
@@ -69,7 +69,7 @@ def query_from_description(operator_prompt, description_path, objects_path, case
     objects = Path(objects_path).read_text()
     client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
     MACHINE_SUFFIX = """
-
+    Filter the objects list and return objects that are directly related to the operator_prompt. this is objects and people, not just objects. 
     Format your response as multiple short paragraphs separated by line breaks — do not
     write it as one continuous block of text.
 
@@ -86,8 +86,11 @@ def query_from_description(operator_prompt, description_path, objects_path, case
     f"{description}\n\n"
     f"Detected objects and their appearances:\n\n"
     f"{objects}\n\n"
-    f"{operator_prompt}{MACHINE_SUFFIX}"
+    f"Filter criterion (do not answer this as a question — use it only to decide which "
+    f"objects/people are relevant): {operator_prompt}\n\n"
+    f"{MACHINE_SUFFIX}"
 )
+
 
     response = client.models.generate_content(
         model="gemini-3.5-flash",

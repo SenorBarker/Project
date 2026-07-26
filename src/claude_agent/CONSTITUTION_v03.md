@@ -14,7 +14,8 @@ Rules the planning agent follows for paper edits. Every decision must cite a rul
     - `SOUNDBITE` — audio-lead. the visuals are not important.
     - `MAP` — a synthetic map/recon asset request (interior or geographic).
     - `METRIC` — a chart/stat asset request.
-    
+    - `CONTESTED` — the transcript/narration makes a factual claim (e.g. subject identity) that the deterministic tracking/mask data contradicts or cannot confirm. Present both: state what's said, state what the data shows, and flag [NEEDS VISUAL REVIEW]. Never silently resolve in favor of either side.
+
 1. Picture Editing  
     R1.1 [FOOTAGE] — No jump cuts on the same subject; change angle by 30°+ or shot size.  
     R1.2 [FOOTAGE] — Cut on action.  
@@ -50,10 +51,10 @@ Rules the planning agent follows for paper edits. Every decision must cite a rul
     R4.6 - Ideas must be completed. e.g a a question receives an answer
     
 5. Metrics & Map Usage  
-    R5.1 —   
+    R5.1 — Use a metric only if it adds something new.  
     R5.2 — Use a map only if geography matters. spatial questions like "where...", "how far" can be considered geographical questions.  
-    R5.3 —   
-    R5.4 — RECON_CAM_POSES/RECON_3D need true multi-viewpoint coverage (multiple cameras or moving camera);  — flag [JUDGMENT CALL] if unstated. CUT3R_RECON/VGGT_O_RECON can work from a statrionary pan — only require that the description states the wearer/camera moved or turned during the span.
+    R5.3 — Metrics support claims; they do not replace sourcing.  
+    R5.4 — RECON_CAM_POSES/RECON_3D need true multi-viewpoint coverage (multiple cameras or repositioning);  — flag [JUDGMENT CALL] if unstated. CUT3R_RECON/VGGT_O_RECON can work from a single camera sweep — only require that the description states the wearer/camera moved or turned during the span.
     
 6. Structure & Pacing  
     R6.1 — Do not open with out-of-order soundbites, hooks or teasers
@@ -67,19 +68,10 @@ Rules the planning agent follows for paper edits. Every decision must cite a rul
 7. Decision Reporting  
     R7.1 — Name  rejected alternatives and why.  
     R7.2 — Mark unresolved choices as [JUDGMENT CALL].
-    R7.3 — Report if the transcript/narration makes a factual claim (e.g. subject identity) that the deterministic tracking/mask data contradicts or cannot confirm. State that the fact is [CONTESTED] and present the contradiction
     
 8. Graphics
     R8.1 — Captions must not cover the subject/action and must stay in safe area. The agent only decides whether a caption belongs and what it says; placement and line count are computed.
-
 9. Editorial
     R9.1 — Every beat must have a strong reason to be included. If the answer to the brief will not change if you remove the beat, then remove it 
 
-10. Analysis
-    R10.1 —  Audio claims should be backed-up by video proof. Request Mask overlays to identfy key people and objects if they are critical to resolve the prompt. flag: [NEEDS VISUAL REVIEW] on this beat
-    R10.2 — Use a metric only if it adds something new.
-    R10.3 — Metrics support claims; they do not replace sourcing.
-    R10.4 — Physics-based analysis (speed, distance, etc) requires depth, so you must demand 3D recon to solve this
-    R10.5 — Metrics can and will support the answer to the prompt. use many, but they must satisfy R10.2 and R10.3
-   
-Draft v0.4 — edit freely. Keep IDs stable.
+Draft v0.3 — edit freely. Keep IDs stable.

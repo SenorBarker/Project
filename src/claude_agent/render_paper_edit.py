@@ -149,3 +149,24 @@ def derive_and_save_flags(paper_edit_json_path: str | Path, available_flag_keys)
     flags_path = json_path.with_name(json_path.stem.replace("_paper_edit", "") + "_flags.json")
     flags_path.write_text(json.dumps(flags, indent=2), encoding="utf-8")
     return flags_path
+
+
+def build_tracking_detections(paper_edit_json_path: str | Path) -> list[dict]:
+    """Collects every beat's tracked_subject.spans into a detections-shaped
+    list[{"subject","start_s","end_s"}] for A_YOLO_seg.track_subject_masks_from_hints
+    or A_ROBOFLOW_SAM3.track_subject_sam3, flattening multiple spans per
+    subject into separate dicts (each tracker expects one dict per span)."""
+    data = json.loads(Path(paper_edit_json_path).read_text(encoding="utf-8"))
+    detections = []
+    for beat in data["beats"]:
+        tracked = beat.get("tracked_subject")
+        if not tracked:
+            continue
+        for span in tracked["spans"]:
+            detections.append({
+                "order": beat["order"],
+                "subject": tracked["subject"],
+                "start_s": span["start_s"],
+                "end_s": span["end_s"],
+            })
+    return detections

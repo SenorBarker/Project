@@ -4,14 +4,13 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
 import cv2
 import numpy as np
 
 from C_CSV_report import add_to_report
-from A_Config import assets_dir, asset_name, case_dir, report_path, to_report_path
+from A_Config import assets_dir, asset_name, case_dir, report_path, to_report_path, sam3_masks_dir
 from B_video_processing import video_fps
 
 MASK_NAME_FMT = "{:04d}.png"
@@ -66,100 +65,71 @@ def apply_mask_overlay(frame_bgr, mask_bool, color=(0, 200, 0), alpha=0.4):
     return out
 
 
-def video_overlay_edit(
+def mask_compositor(
         video_path,
         start,
         end,
-        mask_dir,
+        tracker,
         mask_start,
         mask_end,
         handles=1,
         color=(0, 200, 0),
         alpha=0.4):
-    '''Like video_edit, but burns a mask-highlight overlay onto any frame in
-    [start, end] (frame numbers, the video range) that both has a matching
-    MASK_NAME_FMT-named PNG in mask_dir AND falls within [mask_start, mask_end].
-    mask_dir may hold masks for a wider range than wanted here (e.g. other
-    detections in the same sequence) -- mask_start/mask_end scope which of
-    those files actually get used, independent of the video's start/end.
-    Frames with no mask, or outside [mask_start, mask_end], pass through
-    unchanged.
+    '''Burns a mask-highlight overlay onto any frame in [start, end] (frame
+    numbers, the video range) that both has a matching MASK_NAME_FMT-named
+    PNG in mask_dir AND falls within [mask_start, mask_end]. mask_dir may
+    hold masks for a wider range than wanted here (e.g. other detections in
+    the same sequence) -- mask_start/mask_end scope which of those files
+    actually get used, independent of the video's start/end. Frames with no
+    mask, or outside [mask_start, mask_end], pass through unchanged.
 
-    cv2 can't touch audio, so this is done in two passes: frames are written
-    to a silent temp video, then muxed with the original video's audio
-    (re-clipped to the same range and re-encoded to AAC, same as video_edit)
-    in one final ffmpeg pass. Also appends the output path to the report CSV.'''
+    Writes every frame in the (handle-padded) range out as a PNG sequence
+    under assets_dir()/overlay_frames,  appends the frames
+    folder to the report CSV.'''
     fps = video_fps(video_path)
-    start_s = max(0.0, start / fps - handles)
-    end_s   = end / fps + handles
+    if tracker == "SAM3":
+          masks_dir = sam3_masks_dir()
 
     handles_frames = round(handles * fps)
     start_frame = max(0, start - handles_frames)
-    end_frame   = end + handles_frames  # inclusive  
+    end_frame   = end + handles_frames  # inclusive
 
     cap = cv2.VideoCapture(str(video_path))
-    fw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    fh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    tmp_silent = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
-    tmp_silent.close()
-    tmp_silent_path = tmp_silent.name
+    out_dir = assets_dir() / "overlay_frames"
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    try:
-        writer = cv2.VideoWriter(tmp_silent_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (fw, fh))
+    frame_idx = 0
+    written = 0
+    while frame_idx <= end_frame:
+        ret, frame = cap.read()
+        if not ret:
+            if frame_idx < start_frame:
+                cap.release()
+                raise ValueError(
+                    f"{video_path} ended at frame {frame_idx}, before requested start {start_frame}."
+                )
+            print(f"Warning: video ended at frame {frame_idx}, before requested end {end_frame} "
+                  f"-- output will be shorter than requested.")
+            break
+        #frames sent to have mask overlay here
+        if frame_idx >= start_frame:
+            mask = None
+            if mask_start <= frame_idx <= mask_end:
+                mask = _load_mask_bool(masks_dir, frame_idx)
+            if mask is not None:
+                frame = apply_mask_overlay(frame, mask, color=color, alpha=alpha)
+            cv2.imwrite(str(out_dir / f"frame_{frame_idx}.png"), frame)
+            written += 1
+        frame_idx += 1
 
-        frame_idx = 0
-        written = 0
-        first_frame = None
-        while frame_idx <= end_frame:
-            ret, frame = cap.read()
-            if not ret:
-                if frame_idx < start_frame:
-                    cap.release()
-                    writer.release()
-                    raise ValueError(
-                        f"{video_path} ended at frame {frame_idx}, before requested start {start_frame}."
-                    )
-                print(f"Warning: video ended at frame {frame_idx}, before requested end {end_frame} "
-                      f"-- output will be shorter than requested.")
-                break
-            #frames sent to have mask overlay here
-            if frame_idx >= start_frame:
-                mask = None
-                if mask_start <= frame_idx <= mask_end:
-                    mask = _load_mask_bool(mask_dir, frame_idx)
-                if mask is not None:
-                    frame = apply_mask_overlay(frame, mask, color=color, alpha=alpha)
-                if first_frame is None:
-                    first_frame = frame.copy()
-                writer.write(frame)
-                written += 1
-            frame_idx += 1
+    cap.release()
 
-        cap.release()
-        writer.release()
+    if written == 0:
+        raise ValueError(f"No frames written for [{start_frame}, {end_frame}] in {video_path}.")
 
-        if written == 0:
-            raise ValueError(f"No frames written for [{start_frame}, {end_frame}] in {video_path}.")
-        outpath = assets_dir() / f"{asset_name()}_overlay_video.mp4"
-        outname = f"{asset_name()}_overlay_video.mp4"
-        subprocess.run(
-            ["ffmpeg", "-y",
-             "-i", tmp_silent_path,
-             "-ss", f"{start_s:.3f}", "-to", f"{end_s:.3f}", "-i", str(video_path),
-             "-map", "0:v:0", "-map", "1:a:0",
-             "-c:v", "libx264", "-c:a", "aac", str(outpath)],
-            check=True,
-        )
-
-        thumb_path = assets_dir() / f"{asset_name()}_overlay_thumb.png"
-        thumb_name = f"{asset_name()}_overlay_thumb.png"
-        cv2.imwrite(str(thumb_path), first_frame)
-    finally:
-        os.remove(tmp_silent_path)
-
-    add_to_report({"overlay_mp4": outname, "overlay_mp4_thumb": thumb_name})
-    return outpath
+    add_to_report({"overlay_frames_dir": to_report_path(out_dir)})
+    return 
 
 
 #-------PAPER-EDIT ASSEMBLER-----------
@@ -383,12 +353,21 @@ def find_cut_points(beat, video_path, fps, analysis_2d_for_decisions=None,
                      analysis_margin_s=1.5, noise_db=-20, min_silence_s=0.3):
     '''Finds this beat's actual in/out frames from its rough search window,
     audio-first (see module comment). Mutates and returns beat; no-op if
-    beat isn't a real auto_select beat -- other beats are someone else's job.'''
-    if not (beat["segment_type"] == "real" and beat.get("cut_mode") == "auto_select"):
+    beat isn't  auto_select -- other beats are someone else's job.'''
+    if not (beat.get("cut_mode") == "auto_select"):
         return beat
 
-    window_start_s = beat["search_window_start_seconds"]
-    window_end_s = beat["search_window_end_seconds"]
+  
+    #if we have masks
+    beat_analysis = (analysis_2d_for_decisions or {}).get(beat["order"]) #check for order/beat and don't crash
+    if beat_analysis and beat_analysis["subject_first_frame"] is not None \
+            and beat_analysis["subject_last_frame"] is not None:
+        window_start_s = beat_analysis["subject_first_frame"] / fps
+        window_end_s = beat_analysis["subject_last_frame"] / fps
+    #if we don't have masks
+    else:
+        window_start_s = beat["search_window_start_seconds"]
+        window_end_s = beat["search_window_end_seconds"]
 
     onset_s, offset_s, handle_in_s, handle_out_s = find_true_audio_span(
         video_path, window_start_s, window_end_s,
@@ -439,11 +418,12 @@ def find_cut_points(beat, video_path, fps, analysis_2d_for_decisions=None,
 
 
 def find_all_cut_points(video_path=None, analysis_2d_for_decisions=None, **kwargs):
-    '''Walks the current case's paper_edit.json, finds real in/out frames
-    for every auto_select beat, and rewrites the same file in place -- run
-    this before assemble_paper_edit, which has no handling for unresolved
-    auto_select beats.'''
-    paper_edit_path = case_dir() / "012_agent_p_output" / f"{case_dir().name}_paper_edit.json"
+    '''Walks the current case's paper_edit_draft.json (this runs between the
+    producer's draft and revision passes, before the revision file exists),
+    finds real in/out frames for every auto_select beat, and rewrites the
+    same file in place -- run this before the producer's revision pass, which
+    expects auto_select beats already resolved.'''
+    paper_edit_path = case_dir() / "012_agent_p_output" / f"{case_dir().name}_paper_edit_draft.json"
     paper_edit = json.loads(paper_edit_path.read_text(encoding="utf-8"))
 
     if video_path is None:

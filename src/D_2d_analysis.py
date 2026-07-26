@@ -102,15 +102,28 @@ def GPS_test(video_path, api_key):
        return "no"
    
 
-def analysis_2D(video_path, masks_dir,api_key):
+def analysis_2D(video_path, api_key):
     '''
     #the commands I will run to analyse the video itself
     OUTPUTS
     analysis_2d_for_CSV :  appends the report CSV with metrics I think the report needs
     analysis_2d_for_decisions : dict that is used to decide what to do next in analysis
     '''
+    GPS_sig   = GPS_test(video_path, api_key)
 
+    analysis_2d_for_decisions = {
+            "GPS_signal"            : GPS_sig,
+                    }
 
+    return analysis_2d_for_decisions
+
+def mask_analysis(masks_dir):
+    '''Disk-based frame/contiguity analysis for a tracker that doesn't already
+    track this in-process (e.g. A_YOLO_seg, which writes masks to a
+    caller-supplied output_dir without building this summary itself).
+    SAM3 (A_ROBOFLOW_SAM3.track_subject_sam3) builds its own per-beat version
+    of this directly from the frames it just wrote -- no need to re-decode
+    every mask PNG a second time.'''
     fps = 30 #obtained from image sequencer
 
     frames_list, subject_duration_frames = frames_present(masks_dir) # good for recon
@@ -118,9 +131,7 @@ def analysis_2D(video_path, masks_dir,api_key):
     subject_end  = max(frames_list)
 
     seqs, best_idx        = contiguous_durations(frames_list, tolerance =15)
-    GPS_sig   = GPS_test(video_path, api_key)
-
-
+    
     analysis_2d_for_CSV = {
         # count/range, not a position in the video -- must NOT end in "_frame" or
         # attach_times_of_day will wrongly treat it as a frame index and convert
@@ -132,14 +143,13 @@ def analysis_2D(video_path, masks_dir,api_key):
 
     }
     analysis_2d_for_decisions = {
-        "GPS_signal"            : GPS_sig,
         "Subject_frames_present": frames_list,
         "subject_first_frame"   : subject_start,
         "subject_last_frame"    : subject_end,
         "subject_duration_frames": subject_duration_frames,
         "continuous frame sequences" : seqs,
         "best_seq_idx"           : best_idx
-    }
+        }
     #print new rows each item
     print("\n".join(f"{k}: {v}" for k, v in analysis_2d_for_decisions.items()))
     add_to_report(analysis_2d_for_CSV )

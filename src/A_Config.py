@@ -22,6 +22,7 @@ def set_case(case_name, experiment=None):
     _CASE_NAME = case_name
     _EXPERIMENT = experiment
 
+def case_name(): return _CASE_NAME
 
 def case_dir():
     assert _CASE_NAME is not None, "call set_case(case_name, experiment) first"
@@ -38,6 +39,24 @@ def asset_name():
 
 def report_path():
     return assets_dir() / f"report_{_CASE_NAME}_{_EXPERIMENT}.csv"
+
+
+def source_dir(): return case_dir() / "010_source"
+def query_dir(): return case_dir() / "012_Gemini_outputs"
+def yolo_masks_dir(): return case_dir() / "015_YOLO"
+def sam3_masks_dir(): return case_dir() / "015_SAM3_masks"
+def frames_for_cam_poses_dir(): return case_dir() / "020_frames_for_cam_poses"
+def frames_for_recon_dir(): return case_dir() / "020_frames_for_recon"
+def vggt_o_output_dir(): return case_dir() / "035_VGGT_O_output"
+def predictions_path(): return vggt_o_output_dir() / "predictions.npz"
+def cut3r_output_dir(): return case_dir() / "035_CUT3R_output"
+def ply_dir(): return vggt_o_output_dir() / "ply"
+def reg_dir(): return case_dir() / "030_Registrations"
+def csv_path_gps(): return case_dir() / "000_GPS_Data" / "GPS_tags.csv"
+def csv_path_pose(): return reg_dir() / "camera_poses.csv"
+
+
+FRAME_NAME_FMT = "{:04d}.jpg"
 
 
 def to_report_path(path):
