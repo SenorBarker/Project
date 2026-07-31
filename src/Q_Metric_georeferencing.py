@@ -162,7 +162,7 @@ def metres_to_latlong (positions, lat_0, lon_0, height_0=0.0): #meas in rows
 
 
 #------CONTROL FUNCTION
-def model_to_GPS_calibrated_locations (csv_path_GPS, csv_path_poses_RS):
+def model_to_GPS_calibrated_locations (csv_path_GPS, poses, Source = "RS_path"):
     '''
     INPUTS: csv path GPS: file path to the GPS CSV. current formatting is frame, lat,lon, but will need converters for different GPS outputs
             csv_path_poses_RS: path to reality scan output will need convervion if we use another tool for this
@@ -172,10 +172,19 @@ def model_to_GPS_calibrated_locations (csv_path_GPS, csv_path_poses_RS):
     Geo-cords :            CAMERA POSES as lat lon 
     '''
     GPS_dict = csv_to_GPS_dict(csv_path_GPS)
-    _, cam_pose_dict = load_reality_scan_trace(csv_path_poses_RS)
+    #loader for RS specific path
+    if Source ==  "RS_path":
+        _, cam_pose_dict = load_reality_scan_trace(poses)
+    #or just use the dict as provided
+    else:
+        cam_pose_dict = poses
 
+    #get matching poses - incoudes # frames to seek the match
     GPS_locs, lat_0, lon_0, cam_poses_filt = GPS_camerapose_matcher(GPS_dict, cam_pose_dict, max_frame_gap=150)
-    R, s, t, Cam_poses_metric, rmse = umeyama_align(GPS_locs, cam_poses_filt, label_A = "A", label_B = "B", out_path = None, with_scale=True, anchor_index=None, up_A=None, up_B=None, up_weight=None, skip_indices=None)
+    # label_B = Source: reuse the string callers already pass in (previously only
+    # used for the RS_path branch check above) as the chart label too, so the A/B
+    # legend actually says which technique this is instead of generic "A"/"B".
+    R, s, t, Cam_poses_metric, rmse = umeyama_align(GPS_locs, cam_poses_filt, label_A = "GPS", label_B = Source, out_path = None, with_scale=True, anchor_index=None, up_A=None, up_B=None, up_weight=None, skip_indices=None)
 
     #keep positions frame-keyed end-to-end -- never rely on cam_pose_dict's row order matching frame order
     frames_sorted = sorted(cam_pose_dict.keys())

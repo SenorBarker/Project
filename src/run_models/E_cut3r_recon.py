@@ -228,7 +228,11 @@ def run_cut3r(frames_dir, output_dir, ckpt_path, size=512, device="cuda",
                     R_norm = _OPENGL @ w2c_0[:3, :3]
                     t_norm = _OPENGL @ w2c_0[:3,  3]
                 pts3d_world = res["pts3d_in_other_view"].cpu()[0].numpy()
-                _export_outputs(output_dir, f_id, depth, conf, color,
+                # Name outputs by the real source frame number, not the loop index --
+                # frames_dir can be sparse/non-contiguous (e.g. 1661.jpg, 1687.jpg, ...),
+                # so f_id alone would silently discard the true frame identity.
+                frame_num = int(Path(img_paths[f_id]).stem)
+                _export_outputs(output_dir, frame_num, depth, conf, color,
                                 c2w, intrin, pts3d_world, R_norm, t_norm, nvs_rgb,
                                 conf_threshold)
 
@@ -313,7 +317,10 @@ def run_cut3r(frames_dir, output_dir, ckpt_path, size=512, device="cuda",
                     nvs_out    = inference_step(nvs_view, state_args, model, device)
                     nvs_rgb    = (0.5 * (nvs_out["pred"]["rgb"][0].numpy() + 1.0)).clip(0, 1)
 
-                _export_outputs(output_dir, f_id, depth, conf, color,
+                # Same reasoning as the main-pass export above: name by real frame
+                # number (img_path is already the true source path here), not f_id.
+                frame_num = int(Path(img_path).stem)
+                _export_outputs(output_dir, frame_num, depth, conf, color,
                                 c2w, intrin, pts3d_world, R_norm, t_norm, nvs_rgb,
                                 conf_threshold)
 

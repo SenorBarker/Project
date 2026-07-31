@@ -5,6 +5,9 @@
 	// Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
 	"build": { "dockerfile": "Dockerfile" },
 
+	"workspaceMount": "source=/home/dbarker/knuckles_drive,target=/workspaces/knuckles_drive,type=bind,consistency=cached,bind-propagation=rslave",
+	"workspaceFolder": "/workspaces/knuckles_drive",
+
 	"features": {
 		"ghcr.io/devcontainers/features/conda:1": {}
 	},

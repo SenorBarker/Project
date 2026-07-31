@@ -117,30 +117,47 @@ def analysis_2D(video_path, api_key):
 
     return analysis_2d_for_decisions
 
-def mask_analysis(masks_dir):
-    '''Disk-based frame/contiguity analysis for a tracker that doesn't already
-    track this in-process (e.g. A_YOLO_seg, which writes masks to a
-    caller-supplied output_dir without building this summary itself).
-    SAM3 (A_ROBOFLOW_SAM3.track_subject_sam3) builds its own per-beat version
-    of this directly from the frames it just wrote -- no need to re-decode
-    every mask PNG a second time.'''
+def mask_analysis(masks_dir, report_prefix=None):
+    '''Disk-based frame/contiguity analysis for a masks folder already on
+    disk -- rebuilds the same shape A_ROBOFLOW_SAM3.track_subject_sam3
+    computes in-process, without re-running SAM3 (expensive); also the
+    primary path for a tracker that doesn't build this itself (e.g.
+    A_YOLO_seg). report_prefix (e.g. "beat03") scopes the CSV rows so
+    multiple beats don't overwrite each other's keys -- omit for a
+    single-subject/whole-video call.
+
+    No detections -> returns a "no detections" entry (all Nones/empty)
+    instead of raising, same as track_subject_sam3's per-beat handling.'''
     fps = 30 #obtained from image sequencer
 
-    frames_list, subject_duration_frames = frames_present(masks_dir) # good for recon
+    frames_list, subject_duration_frames = frames_present(masks_dir)
+
+    if not frames_list:
+        print(f"no masks in {masks_dir}")
+        return {
+            "Subject_frames_present": [],
+            "subject_first_frame": None,
+            "subject_last_frame": None,
+            "subject_duration_frames": None,
+            "continuous frame sequences": [],
+            "best_seq_idx": None,
+            "masks_dir": str(masks_dir),
+        }
+
     subject_start = min(frames_list)
     subject_end  = max(frames_list)
 
     seqs, best_idx        = contiguous_durations(frames_list, tolerance =15)
-    
+
+    prefix = f"{report_prefix}_" if report_prefix else ""
     analysis_2d_for_CSV = {
         # count/range, not a position in the video -- must NOT end in "_frame" or
         # attach_times_of_day will wrongly treat it as a frame index and convert
         # it into a clock time instead of a duration
-        "subject_duration_frame_count": subject_duration_frames,
-        "{{subject_duration_s}}"          : subject_duration_frames / fps,
-        "subject_first_frame"         : subject_start,
-        "subject_last_frame"          : subject_end,
-
+        f"{prefix}subject_duration_frame_count": subject_duration_frames,
+        f"{prefix}{{{{subject_duration_s}}}}"   : subject_duration_frames / fps,
+        f"{prefix}subject_first_frame"          : subject_start,
+        f"{prefix}subject_last_frame"           : subject_end,
     }
     analysis_2d_for_decisions = {
         "Subject_frames_present": frames_list,
@@ -148,11 +165,31 @@ def mask_analysis(masks_dir):
         "subject_last_frame"    : subject_end,
         "subject_duration_frames": subject_duration_frames,
         "continuous frame sequences" : seqs,
-        "best_seq_idx"           : best_idx
+        "best_seq_idx"           : best_idx,
+        "masks_dir"              : str(masks_dir),
         }
     #print new rows each item
     print("\n".join(f"{k}: {v}" for k, v in analysis_2d_for_decisions.items()))
-    add_to_report(analysis_2d_for_CSV )
-    #save_to_csv([analysis_2d_for_CSV], assets_dir / "analysis_2d.csv")
+    add_to_report(analysis_2d_for_CSV)
+
+    return analysis_2d_for_decisions
+
+
+def analysis_2d_from_masks(paper_edit_json_path):
+    '''The "dict maker" -- knows which beats to check. Walks every beat with
+    tracked_subject set and rebuilds analysis_2d_for_decisions (keyed by
+    beat "order", same shape A_ROBOFLOW_SAM3.track_subject_sam3 returns) from
+    the per-beat masks already on disk at sam3_masks_dir()/beat{order:02d}/
+    -- no SAM3 API call, just re-reading files that are already there.'''
+    from A_Config import sam3_masks_dir
+
+    data = json.loads(Path(paper_edit_json_path).read_text(encoding="utf-8"))
+    analysis_2d_for_decisions = {}
+    for beat in data["beats"]:
+        if not beat.get("tracked_subject"):
+            continue
+        order = beat["order"]
+        masks_dir = sam3_masks_dir() / f"beat{order:02d}"
+        analysis_2d_for_decisions[order] = mask_analysis(masks_dir, report_prefix=f"beat{order:02d}")
 
     return analysis_2d_for_decisions

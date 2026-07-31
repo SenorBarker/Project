@@ -1,5 +1,5 @@
 """Standalone worker for view_ply_sequence_with_scenepic (see U_rendering.py).
-
+bakes  HTML that's loaded and watched
 Runs inside the separate open3d/scenepic conda env via `conda run`, so it must not
 import anything from the pipeline (A_Config, C_CSV_report) -- those assume the
 Msc2 env and aren't guaranteed to exist here. Just writes the HTML viewer file;

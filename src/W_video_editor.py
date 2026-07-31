@@ -129,13 +129,83 @@ def mask_compositor(
         raise ValueError(f"No frames written for [{start_frame}, {end_frame}] in {video_path}.")
 
     add_to_report({"overlay_frames_dir": to_report_path(out_dir)})
-    return 
+    return
+
+
+def _mask_overlay_mezzanine_clip(beat, video_path, fps, out_dir):
+    '''Lossless extraction of a mask-overlay beat -- a tracked_subject beat
+    (segment_type "synthetic", but real footage, not a generated asset; see
+    producer.md's "Segment types & duration" exception) whose start_frame/
+    end_frame have already been resolved by find_cut_points. Burns the
+    SAM3 mask (sam3_masks_dir()/, filename keyed by absolute source-video
+    frame number -- see A_ROBOFLOW_SAM3.track_subject_sam3) onto each frame, then encodes
+    losslessly with the source video's own audio for that range -- not the
+    silent placeholder track _map_mezzanine_clip uses, since this is real
+    audio, just with an overlaid picture.
+
+    cv2/OpenCV's FFV1 VideoWriter support is unreliable across builds, so
+    frames are written to a temp PNG sequence first (same approach as
+    R_map_animator/_map_mezzanine_clip) and ffmpeg does the actual lossless
+    encode from that sequence.'''
+    start_frame = beat["start_frame"]
+    end_frame   = beat["end_frame"]
+    start_s = start_frame / fps
+    end_s   = (end_frame + 1) / fps
+
+    # masks_dir = sam3_masks_dir() / f"beat{beat['order']:02d}"
+    masks_dir = sam3_masks_dir()
+
+    tmp_frames_dir = out_dir / f"_beat{beat['order']:02d}_mask_frames"
+    tmp_frames_dir.mkdir(parents=True, exist_ok=True)
+
+    cap = cv2.VideoCapture(str(video_path))
+    frame_idx = 0
+    written = 0
+    try:
+        while frame_idx <= end_frame:
+            ret, frame = cap.read()
+            if not ret:
+                if frame_idx < start_frame:
+                    raise ValueError(
+                        f"{video_path} ended at frame {frame_idx}, before beat {beat['order']}'s "
+                        f"start {start_frame}."
+                    )
+                break
+            if frame_idx >= start_frame:
+                mask = _load_mask_bool(masks_dir, frame_idx)
+                if mask is not None:
+                    frame = apply_mask_overlay(frame, mask)
+                cv2.imwrite(str(tmp_frames_dir / f"frame_{written:04d}.png"), frame)
+                written += 1
+            frame_idx += 1
+    finally:
+        cap.release()
+
+    if written == 0:
+        shutil.rmtree(tmp_frames_dir)
+        raise ValueError(f"No frames written for beat {beat['order']} [{start_frame}, {end_frame}].")
+
+    out_path = out_dir / f"beat{beat['order']:02d}_mask.mkv"
+    subprocess.run(
+        ["ffmpeg", "-y",
+         "-framerate", str(fps), "-i", str(tmp_frames_dir / "frame_%04d.png"),
+         "-ss", f"{start_s:.6f}", "-to", f"{end_s:.6f}", "-i", str(video_path),
+         "-map", "0:v:0", "-map", "1:a:0",
+         "-c:v", "ffv1", "-c:a", "pcm_s16le", str(out_path)],
+        check=True,
+    )
+
+    shutil.rmtree(tmp_frames_dir)
+    return out_path
 
 
 #-------PAPER-EDIT ASSEMBLER-----------
-# Rough-cut assembler for the Producer's paper_edit.json. Only two beat
-# shapes are wired up -- what this test needs:
+# Rough-cut assembler for the Producer's paper_edit.json. Three beat shapes
+# are wired up -- what this test needs:
 #   - segment_type == "real": start_frame/end_frame cut from video_path.
+#   - a tracked_subject beat (segment_type "synthetic" but real footage --
+#     archetype can't be trusted to identify this, see producer.md): the
+#     resolved start_frame/end_frame with its SAM3 mask burned in.
 #   - segment_type == "synthetic" and archetype == "MAP": the image sequence
 #     at assets_dir()/map_frames (see R_map_animator).
 # Assumes exactly one video and one map per case -- no camera/asset-id
@@ -237,13 +307,18 @@ def assemble_paper_edit(video_path):
     clip_paths = []
     for beat in beats:
         if beat["segment_type"] == "real":
-            clip_paths.append(_real_mezzanine_clip(beat, video_path, fps, mezzanine_dir))
+            if beat.get("tracked_subject"):
+                print(f"making overlay for beat {beat}")
+                clip_paths.append(_mask_overlay_mezzanine_clip(beat, video_path, fps, mezzanine_dir))
+            else:
+                clip_paths.append(_real_mezzanine_clip(beat, video_path, fps, mezzanine_dir))
+        
         elif beat["segment_type"] == "synthetic" and beat["archetype"] == "MAP":
             clip_paths.append(_map_mezzanine_clip(beat, target_w, target_h, fps, mezzanine_dir))
         else:
             raise NotImplementedError(
                 f"Beat {beat['order']} ({beat['segment_type']}/{beat['archetype']}) "
-                "has no assembler wired up yet -- only real and MAP beats are handled."
+                "has no assembler wired up yet -- only real, mask-overlay, and MAP beats are handled."
             )
 
     out_path = assets_dir() / f"{asset_name()}_rough_cut.mp4"
@@ -368,6 +443,13 @@ def find_cut_points(beat, video_path, fps, analysis_2d_for_decisions=None,
     else:
         window_start_s = beat["search_window_start_seconds"]
         window_end_s = beat["search_window_end_seconds"]
+
+    # No mask bounds AND no search window (e.g. a tracked_subject beat SAM3
+    # found nothing for) -- nothing to resolve from. Leave start_frame/
+    # end_frame unset rather than crash; the Producer's revision pass
+    # already treats "no range came back" as a drop/substitute case.
+    if window_start_s is None or window_end_s is None:
+        return beat
 
     onset_s, offset_s, handle_in_s, handle_out_s = find_true_audio_span(
         video_path, window_start_s, window_end_s,

@@ -186,10 +186,16 @@ def track_subject_sam3(video_path, threshold=0.5,
 
     Reads the DRAFT paper edit, not the final one
 
-    Writes one MASK_NAME_FMT-named PNG per frame with a detected mask into
-    A_Config.sam3_masks_dir()/beat{order:02d}/ -- a separate subfolder per
-    beat, since a beat can have multiple spans and different beats must not
-    share mask frame numbers.
+    Writes one MASK_NAME_FMT-named PNG per frame with a detected mask
+    straight into A_Config.sam3_masks_dir() -- one flat folder for the whole
+    case. Filenames are the absolute source-video frame number
+    (start_frame + metadata.frame_id - 1, see below), and R1.9 guarantees no
+    two beats overlap in time on the same camera, so two beats can never
+    write the same filename. (Previously this used a per-beat
+    beat{order:02d}/ subfolder -- removed because "beat order" isn't a
+    stable identity: the Producer's revision pass can renumber/merge beats,
+    which orphaned already-generated mask folders. See git history for the
+    old per-beat version if this turns out to be wrong.)
 
     Returns None (and prints "Cell disabled") if MASK_OVERLAYS wasn't
     requested. Otherwise returns analysis_2d_for_decisions: a dict keyed by
@@ -240,8 +246,9 @@ def track_subject_sam3(video_path, threshold=0.5,
     analysis_2d_for_decisions = {}
 
     for order, beat_detections in detections_by_beat.items():
-        beat_mask_dir = masks_root / f"beat{order:02d}"
-        beat_mask_dir.mkdir(parents=True, exist_ok=True)
+        # beat_mask_dir = masks_root / f"beat{order:02d}"
+        # beat_mask_dir.mkdir(parents=True, exist_ok=True)
+        beat_mask_dir = masks_root
         beat_frames = []
 
         for det in beat_detections:

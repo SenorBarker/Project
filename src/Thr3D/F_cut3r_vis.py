@@ -33,6 +33,7 @@ def visualise_cut3r(output_dir):
     btn_m30  = server.gui.add_button("-30")
     btn_p30  = server.gui.add_button("+30")
     btn_p100 = server.gui.add_button("+100")
+    point_size_slider = server.gui.add_slider("Point size", min=0.000001, max=0.02, step=0.0001, initial_value=0.0005)
 
     state = {"idx": 0}
 
@@ -81,7 +82,7 @@ def visualise_cut3r(output_dir):
                             cache[fi] = load_ply(files[fi])
                         pts, col = cache[fi]
                         handles[fi] = server.scene.add_point_cloud(
-                            f"/frames/{fi}/pc", points=pts, colors=col, point_size=0.005
+                            f"/frames/{fi}/pc", points=pts, colors=col, point_size=point_size_slider.value, point_shape="circle"
                         )
                         active.add(fi)
 

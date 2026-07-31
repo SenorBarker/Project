@@ -196,7 +196,9 @@ def umeyama_align(A, B, label_A = "A", label_B = "B", out_path = None, with_scal
     Returns: R (3x3 rotation), s (float scale), t (3,) translation, B_aligned (N,3), rmse (float)
     """
     A = np.asarray(A, dtype=float)
+    print("A)")
     B = np.asarray(B, dtype=float)
+    print("A,B", len (A), len(B))
 
     'remove outliers'
     if skip_indices is not None:

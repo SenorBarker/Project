@@ -64,9 +64,7 @@ for each tracked subject. These subjects should be mentioned in the prompt.
   you whether to bother asking, not whether the result will look right —
   that's still the Assistant's call once it's built.
 
-If no 2D analysis exists for a beat you're considering, do not guess a real-
-segment duration — flag `[JUDGMENT CALL]` and note that measurement is
-pending, rather than asserting a number.
+
 
 ## Revision pass (MODE: revision)
 
@@ -74,7 +72,8 @@ Input: your own informed-pass output + the Assistant's feasibility verdicts +
 any new quantitative facts.
 
 Start from the DRAFT PAPER EDIT JSON given in the prompt — that is your prior
-output, not a new brief. Work beat by beat on that JSON: edit, merge, split,
+output, not a new brief. Copy accross all contents to a new JSON, then make ammendments
+Work beat by beat on that JSON: edit, merge, split,
 drop, or add beats directly on it. Do not re-derive the paper edit from the
 source material as if drafting for the first time, and do not silently keep
 a beat unchanged from the draft — every beat gets checked against 1-4 below
@@ -99,7 +98,7 @@ text. Concretely, you:
    at all (no range → treat like an infeasible verdict, drop or substitute
    the beat). 2-and is it roughly the length you asked for (well short →
    decide whether the beat still earns its place, same as a
-   feasible-with-constraint verdict). 3-check if it clashes with otehr beats (R1,8, R1.9)
+   feasible-with-constraint verdict). 3-check if it clashes with other beats (exectue R1,8, R1.9). To merge: take the earlier start and later end frame.Concatenate all other fields; or: `archetype`: keep 1  "EVENT_ACTION"  > "EVENT_TRIGGER" > "AFTERMATH">"SOUNDBITE";  `duration`: sum
 
 
 Do not judge visual quality. If an asset exists, trust only its measured properties. If visual quality is unknown, flag [NEEDS VISUAL REVIEW].
@@ -199,32 +198,24 @@ revised result under the plain (non-`_draft`) name.
 This is the strict template — every beat has exactly these keys, always. For
 `segment_type: "real"` with `cut_mode: "fixed_frames"`, `start_frame`/`end_frame`
 are populated and `search_window_start_seconds`/`search_window_end_seconds` are
-`null` (and vice versa for `"auto_select"`) — see "Segment types & duration"
-above. For `segment_type: "synthetic"`, all six of `cut_mode`, `start_frame`,
+`null` — see "Segment types & duration"
+above. 
+For `segment_type: "synthetic"`, all six of `cut_mode`, `start_frame`,
 `end_frame`, `lead_in_seconds`, `search_window_start_seconds`,
 `search_window_end_seconds` are `null` — cut-point mechanics don't apply to
-generated assets — **except** a `MASK_OVERLAYS` beat with `tracked_subject`
-set: that beat comes from real footage (a mask burned onto the source
-video, not a generated animation), so it still needs `cut_mode:
-"auto_select"` like a real beat, even though `segment_type` stays
-`"synthetic"`. `start_frame`/`end_frame`/`search_window_start_seconds`/
-`search_window_end_seconds`/`lead_in_seconds` stay `null` on it regardless —
-the deterministic cut-point step resolves its in/out from the tracked
-subject's mask span, not a search window you provide. Never drop a key, and
-never fold its value into `source`'s prose instead of setting it directly.
-
+generated assets 
 Field rules per beat:
-- `segment_type: "real"` → `source` is required, `asset_request` and
-  `requested_flags` are `null`.
+- `segment_type: "real"` → `source` is required, `asset_request` is `null`.
+  `requested_flags` is `null` unless the beat also requests a mask overlay
+  (see "Visual confirmation requests" below), in which case it's
+  `["MASK_OVERLAYS"]` and `tracked_subject` is required.
 - `segment_type: "synthetic"` → `asset_request` is required (what it shows,
   why), `source` is `null`, and `requested_flags` is a required non-empty
   list of the exact flag names from AVAILABLE FLAGS this beat needs. If
   multiple feasible methods exist for the same request (e.g. `CUT3R_RECON`
   vs. `VGGT_O_RECON`), list every candidate — the Assistant narrows it down,
   not you.
-- `tracked_subject` — `null` on every beat except a `MASK_OVERLAYS` synthetic
-  beat requested per "Visual confirmation requests" below, where it is
-  required. Never populated on a real beat.
+- `tracked_subject` — `null` on every beat except a `MASK_OVERLAYS` requested beat per "Visual confirmation requests" below, where it is required. 
 - `quote` — required for any beat with usable synced dialogue relevant to the
   subject (R4.1), not just `SOUNDBITE` beats — e.g. a real segment where the
   wearer/subject is talking about the subject on mic. `null` only when the
@@ -239,11 +230,8 @@ Field rules per beat:
 # Visual confirmation requests
 
 If any beat's subject has timecoded
-appearances in OBJECTS, add a companion synthetic beat requesting a mask
-overlay for it (normal synthetic-beat rules: `asset_request` describes it,
-`requested_flags: ["MASK_OVERLAYS"]`, `source: null`). That beat also sets
-`cut_mode: "auto_select"` (see "Segment types & duration" above — the one
-exception to synthetic beats otherwise leaving `cut_mode` null) and
+appearances in OBJECTS, request a mask
+overlay for it :
 `tracked_subject`:
 ```json
 "tracked_subject": {

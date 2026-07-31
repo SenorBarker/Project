@@ -41,17 +41,25 @@ def report_path():
     return assets_dir() / f"report_{_CASE_NAME}_{_EXPERIMENT}.csv"
 
 
+def _with_experiment(base):
+    '''Append the active experiment subfolder if one is set, else use base as-is --
+    some cases have multiple experiments' worth of data side by side under the same
+    stage folder (e.g. multiple frame sets under 020_frames_for_recon), others don't.'''
+    return base / _EXPERIMENT if _EXPERIMENT else base
+
+#make the directories either case_dir / XXX_thing, or case_dir / XXX_thing / experiment
 def source_dir(): return case_dir() / "010_source"
 def query_dir(): return case_dir() / "012_Gemini_outputs"
-def yolo_masks_dir(): return case_dir() / "015_YOLO"
-def sam3_masks_dir(): return case_dir() / "015_SAM3_masks"
-def frames_for_cam_poses_dir(): return case_dir() / "020_frames_for_cam_poses"
-def frames_for_recon_dir(): return case_dir() / "020_frames_for_recon"
-def vggt_o_output_dir(): return case_dir() / "035_VGGT_O_output"
+def yolo_masks_dir(): return _with_experiment(case_dir() / "015_YOLO")
+def sam3_masks_dir(): return _with_experiment(case_dir() / "015_SAM3_masks")
+def frames_for_cam_poses_dir(): return _with_experiment(case_dir() / "020_frames_for_cam_poses")
+def frames_for_recon_dir(): return _with_experiment(case_dir() / "020_frames_for_recon")
+def vggt_o_output_dir(): return _with_experiment(case_dir() / "035_VGGT_O_output")
 def predictions_path(): return vggt_o_output_dir() / "predictions.npz"
-def cut3r_output_dir(): return case_dir() / "035_CUT3R_output"
-def ply_dir(): return vggt_o_output_dir() / "ply"
-def reg_dir(): return case_dir() / "030_Registrations"
+def cut3r_output_dir(): return _with_experiment(case_dir() / "035_CUT3R_output")
+def lingbot_map_dir(): return _with_experiment(case_dir() / "036_lingbot_map_output")
+def ply_dir(): return vggt_o_output_dir() / "ply"  # already experiment-scoped via vggt_o_output_dir()
+def reg_dir(): return _with_experiment(case_dir() / "030_Registrations")
 def csv_path_gps(): return case_dir() / "000_GPS_Data" / "GPS_tags.csv"
 def csv_path_pose(): return reg_dir() / "camera_poses.csv"
 

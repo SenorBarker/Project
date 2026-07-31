@@ -1,11 +1,14 @@
 
+import glob
+import os
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass
 from pathlib import Path
 import torch
 import torch.nn.functional as F
-from G_transforms_alignments import _rc_rotation_matrix, apply_cam0_frame, unproject
+from G_transforms_alignments import _rc_rotation_matrix, apply_cam0_frame, unproject, ortho_charts
+from A_Config import FRAME_NAME_FMT, frames_for_recon_dir
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 #------------------loaders-------------------
@@ -24,7 +27,7 @@ def load_reality_scan_trace(csv_path):
     df = pd.read_csv(csv_path)
     xyz = df[["x", "alt", "y"]].to_numpy()
        
-    #chart = ortho_charts(xyz, "Reality Scan",dataB=None, title = "Reality Scan")
+    chart = ortho_charts(xyz, "Reality Scan",dataB=None, title = "Reality Scan")
 
     yaw0, pitch0, roll0 = df.loc[0, ["yaw", "pitch", "roll"]]
     #print(yaw0, pitch0, roll0)
@@ -39,7 +42,12 @@ def load_reality_scan_trace(csv_path):
 
 
 def load_cut3r_trace(camera_dir):
-    """Extract camera positions from a directory of CUT3R per-frame pose .npz files."""
+    """Extract camera positions from a directory of CUT3R per-frame pose .npz files.
+
+    Pre-fix CUT3R output only (files named by sequential loop index, not real frame
+    number -- see E_cut3r_recon.py's naming fix). Kept as-is so AA_CAM_POSE_COMPARE_01.ipynb's
+    existing calls against already-run, pre-fix CUT3R output keep working. New CUT3R
+    runs are frame-number-named -- use load_cut3r_trace_v2 for those."""
     files = sorted(glob.glob(os.path.join(camera_dir, "*.npz")))
     positions = []
     for f in files:
@@ -51,14 +59,94 @@ def load_cut3r_trace(camera_dir):
     return np.array(positions)
 
 
-def load_megasam_trace(npz_path):
-    """Extract camera positions from a MegaSaM {scene}_sgd_cvd_hr.npz output."""
+def load_cut3r_trace_v2(camera_dir):
+    """Extract camera positions from CUT3R's camera/*.npz, frame-number-named at
+    the source (post naming-fix, see E_cut3r_recon.py). Returns (positions,
+    world_pos_dict) like load_lingbot_map_trace/load_reality_scan_trace -- no
+    frames_dir cross-referencing needed, the filename is the frame number."""
+    files = sorted(Path(camera_dir).glob("*.npz"))
+    world_pos_dict = {int(f.stem): np.load(f)["pose"][:3, 3] for f in files}
+    print(world_pos_dict)
+    positions = np.array([world_pos_dict[k] for k in sorted(world_pos_dict)])
+    print(positions.shape)
+    chart = ortho_charts(positions, "CUT3R", dataB=None, title="CUT3R")
+    return positions, world_pos_dict
+
+
+def load_megasam_trace(npz_path, frames_dir=None):
+    """Extract camera positions from a MegaSaM {scene}_sgd_cvd_hr.npz output.
+
+    Row-order only -- no frame numbers in the data itself -- so frames_dir is
+    needed to build the frame-keyed dict (see positions_to_frame_dict). Defaults
+    to A_Config.frames_for_recon_dir() (the currently active case/experiment,
+    same zero-arg convention as the rest of A_Config) -- pass frames_dir
+    explicitly when comparing against a different/older frame set than whatever
+    is currently active via set_case()."""
+    if frames_dir is None:
+        frames_dir = frames_for_recon_dir()
     data = np.load(npz_path)
+    positions = data["cam_c2w"][:, :3, 3]
+    chart = ortho_charts(positions, "MegaSAM", dataB=None, title="MegaSAM")
+    world_pos_dict = positions_to_frame_dict(positions, frames_dir)
+    return positions, world_pos_dict
 
-    cam_pos = data["cam_c2w"][:, :3, 3]
-    chart = ortho_charts(cam_pos, "MegaSAM",dataB=None, title = "MegaSAM")
 
-    return data["cam_c2w"][:, :3, 3]
+def load_VGGT_O_trace(npz_path, frames_dir=None):
+    """Extract camera positions from a VGGT-O predictions.npz, in cam0's frame of
+    reference -- same convention as Reconstruction.cam_pos_dict() (which is the
+    other existing way to get frame-keyed VGGT-O positions, if you already have a
+    Reconstruction loaded; this is the standalone version for when you don't).
+    frames_dir defaults to A_Config.frames_for_recon_dir(), same as load_megasam_trace.
+
+    Frame 0's extrinsic is identity by construction (verified against real output --
+    see load_VGGT_trace below for the same check on plain VGGT), so no separate
+    cam0-anchoring step is needed; positions are already in that frame."""
+    if frames_dir is None:
+        frames_dir = frames_for_recon_dir()
+    d = np.load(npz_path)
+    extrinsic = d["extrinsic"]  # (N, 3, 4), world-to-camera
+
+    rotation_t = np.transpose(extrinsic[:, :3, :3], (0, 2, 1))
+    positions = -np.einsum("nij,nj->ni", rotation_t, extrinsic[:, :3, 3])
+
+    chart = ortho_charts(positions, "VGGT_O", dataB=None, title="VGGT_O")
+    world_pos_dict = positions_to_frame_dict(positions, frames_dir)
+    return positions, world_pos_dict
+
+
+def load_VGGT_trace(sparse_reconstruction_dir, frames_dir=None):
+    """Extract camera positions from plain-VGGT's extrinsic.npy (demo_colmap.py).
+    frames_dir defaults to A_Config.frames_for_recon_dir(), same as load_megasam_trace.
+
+    Frame 0 is identity by construction -- verified directly against real output
+    (Data/01_walk/034_VGGT_output/.../extrinsic.npy: rotation ~= I, translation ~= 0
+    to ~1e-4 float noise), same as VGGT-O and lingbot-map. No cam0-anchoring step
+    needed, positions are already in that frame."""
+    if frames_dir is None:
+        frames_dir = frames_for_recon_dir()
+    extrinsic = np.load(Path(sparse_reconstruction_dir) / "extrinsic.npy")  # (N,3,4), w2c
+    rotation_t = np.transpose(extrinsic[:, :3, :3], (0, 2, 1))
+    positions = -np.einsum("nij,nj->ni", rotation_t, extrinsic[:, :3, 3])
+    chart = ortho_charts(positions, "VGGT", dataB=None, title="VGGT")
+    world_pos_dict = positions_to_frame_dict(positions, frames_dir)
+    return positions, world_pos_dict
+
+
+def load_lingbot_map_trace(output_dir):
+    """Extract camera positions from run_lingbot_map()'s per-frame npz output
+    (B_lingbot_map.py). Already frame-number-keyed by filename -- no frames_dir
+    cross-referencing needed."""
+    files = sorted(Path(output_dir).glob("*.npz"))
+    world_pos_dict = {}
+    for f in files:
+        frame_num = int(f.stem)
+        d = np.load(f)
+        extrinsic = d["extrinsic_w2c"]  # (3, 4), world-to-camera
+        rotation_t = extrinsic[:3, :3].T
+        world_pos_dict[frame_num] = -rotation_t @ extrinsic[:3, 3]
+    positions = np.array([world_pos_dict[k] for k in sorted(world_pos_dict)])
+    chart = ortho_charts(positions, "lingbot-map", dataB=None, title="lingbot-map")
+    return positions, world_pos_dict
 
 
 #load the vggt_O output file - com
@@ -217,6 +305,20 @@ def build_frame_index(frames_dir, name_fmt, frame_range=None):
         start, end = frame_range
         frames = frames[start:end]
     return {frame: row for row, frame in enumerate(frames)}
+
+
+def positions_to_frame_dict(positions, frames_dir, frame_name_fmt=FRAME_NAME_FMT):
+    """Zip a flat (N,3) trace array (row order) against the sorted frame numbers of
+    the folder it was reconstructed from -- for techniques whose output doesn't carry
+    frame numbers itself (MegaSaM, plain VGGT, VGGT-O). Not needed for CUT3R
+    (frame-number-named at the source, see load_cut3r_trace_v2) or lingbot-map (same).
+    If you already have a Reconstruction loaded for VGGT-O, its own cam_pos_dict()
+    does the same job without a second frames_dir lookup."""
+    frames = available_frames(frames_dir, frame_name_fmt)
+    assert len(frames) == len(positions), \
+        f"{len(frames)} frames in {frames_dir} vs {len(positions)} positions -- " \
+        "this technique wasn't run on the frame set you're matching against"
+    return {frame: positions[i] for i, frame in enumerate(frames)}
 
 
 
