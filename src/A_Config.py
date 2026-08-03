@@ -54,6 +54,7 @@ def yolo_masks_dir(): return _with_experiment(case_dir() / "015_YOLO")
 def sam3_masks_dir(): return _with_experiment(case_dir() / "015_SAM3_masks")
 def frames_for_cam_poses_dir(): return _with_experiment(case_dir() / "020_frames_for_cam_poses")
 def frames_for_recon_dir(): return _with_experiment(case_dir() / "020_frames_for_recon")
+def mega_SAM_output_dir(): return _with_experiment(case_dir() / "036_MEGASAM_output") 
 def vggt_o_output_dir(): return _with_experiment(case_dir() / "035_VGGT_O_output")
 def predictions_path(): return vggt_o_output_dir() / "predictions.npz"
 def cut3r_output_dir(): return _with_experiment(case_dir() / "035_CUT3R_output")

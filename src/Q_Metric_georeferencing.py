@@ -14,7 +14,7 @@ from Q_GPS_processing import csv_to_GPS_dict, android_movie_GPS
 from F_post_recon_processing import build_frame_index, load_reality_scan_trace
 from C_CSV_report import add_to_report
 from A_Config import assets_dir, asset_name, report_path, to_report_path
-from G_transforms_alignments import umeyama_align, ortho_charts , transform_RST   
+from G_transforms_alignments import umeyama_align, ortho_charts , transform_RST   , umeyama_align_anchor
 
 #real-world lat long into metres, relative to the first item as origin (0,0,0).
 #x ~ east-west, z ~ north-south, y ~ up (0 for every row if heights isn't given,
@@ -39,32 +39,41 @@ def lat_long_to_metres_3dims(coords_list, heights=None):
     
 
 #---------get A B matches for GPS anchors
-def GPS_camerapose_matcher(GPS_dict, world_pos_dict, max_frame_gap=150):
-    """Match each GPS anchor to the nearest frame actually present in
-    world_pos_dict (image_sequencer keeps the sharpest frame per sample point,
-    not every Nth frame, so the GPS anchor's own frame# is rarely a key).
-    Anchors whose nearest available frame is more than max_frame_gap frames
-    away are dropped - at typical walking pace that's still well inside GPS's
-    own ~10m error radius, so closer matches aren't worth enforcing tighter.
-    Outputs both in xyz, and the starting lat and lon we need for transforms in the future
+def GPS_camerapose_matcher(GPS_dict, cam_pos_dict, max_frame_gap=150):#150 is 5s 
+    """Each GPS anchor picks its single nearest frame in cam_pos_dict. If two
+    anchors pick the same frame, the closer one keeps it and the other is
+    dropped (no fallback -- with more anchors than frames some are always
+    unmatched, and any fallback frame already has its own closer claimant).
+    Anchors with nothing within max_frame_gap are dropped too.
     """
-    available = np.array(sorted(world_pos_dict.keys()))
+    available_cams = sorted(cam_pos_dict.keys())
+
+    nearest = {}  # frame_idx -> (gap, avail_frame)
+    for frame_idx in GPS_dict:
+        best_cam = min(available_cams, key=lambda a: abs(a - frame_idx))#closest matching camera pose key
+        gap = abs(best_cam - frame_idx)##frames apart
+        if gap <= max_frame_gap: #check it's allowed
+            nearest[frame_idx] = (gap, best_cam) #nearest[gpsframe] = (gap, cam_frame)
+
+    winners = {}  #
+    for frame_idx, (gap, best_cam) in nearest.items(): #GPS index, distance, best cam index
+        if best_cam not in winners or gap < winners[best_cam][0]: # add in the combo if the cam frame isnt in winners, or this gap is smaller
+            winners[best_cam] = (gap, frame_idx)#keep gap for doing the above line
+    matched = {frame_idx: cam for cam, (_, frame_idx) in winners.items()}#reverse back to GPS indices: camindices
+
     GPS_locs, object_locs = [], []
     for frame_idx, latlon in GPS_dict.items():
-        nearest = available[np.argmin(np.abs(available - frame_idx))] #smallest difference between available poses and the gps index
-        gap = abs(int(nearest) - frame_idx)
-        if gap > max_frame_gap:
-            print(f"GPS anchor at frame {frame_idx} dropped: nearest reconstructed "
-                  f"frame {nearest} is {gap} frames away (limit {max_frame_gap}).")
+        if frame_idx not in matched:
+            print(f"GPS anchor at frame {frame_idx} dropped: out of range or lost to a closer anchor.")
             continue
         GPS_locs.append(latlon)
-        object_locs.append(world_pos_dict[nearest])
+        object_locs.append(cam_pos_dict[matched[frame_idx]])
 
     GPS_locs = np.array(GPS_locs)
     GPS_locs, lat_0, lon_0 = lat_long_to_metres_3dims(GPS_locs, heights=None)
     object_locs = np.array(object_locs)
     assert len(GPS_locs) == len(object_locs)
-    return GPS_locs, lat_0, lon_0, object_locs #both N,3. 
+    return GPS_locs, lat_0, lon_0, object_locs #both N,3.
 
 #Data from above can be pumped into umeyama align
 
@@ -184,7 +193,7 @@ def model_to_GPS_calibrated_locations (csv_path_GPS, poses, Source = "RS_path"):
     # label_B = Source: reuse the string callers already pass in (previously only
     # used for the RS_path branch check above) as the chart label too, so the A/B
     # legend actually says which technique this is instead of generic "A"/"B".
-    R, s, t, Cam_poses_metric, rmse = umeyama_align(GPS_locs, cam_poses_filt, label_A = "GPS", label_B = Source, out_path = None, with_scale=True, anchor_index=None, up_A=None, up_B=None, up_weight=None, skip_indices=None)
+    R, s, t, Cam_poses_metric, rmse = umeyama_align_anchor(GPS_locs, cam_poses_filt, label_A = "GPS", label_B = Source, out_path = None, with_scale=True, up_A=None, up_B=None, up_weight=None, skip_indices=None)
 
     #keep positions frame-keyed end-to-end -- never rely on cam_pose_dict's row order matching frame order
     frames_sorted = sorted(cam_pose_dict.keys())

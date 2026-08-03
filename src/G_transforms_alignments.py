@@ -177,7 +177,52 @@ def merge_pos(*sub_pos_real_dicts):
 
 
  #--------------ALIGNMENTS--------------------------------------------------------------
-def umeyama_align(A, B, label_A = "A", label_B = "B", out_path = None, with_scale=True, anchor_index=None, up_A=None, up_B=None, up_weight=None, skip_indices=None):
+def _umeyama_solve(A, B, ref_A, ref_B, with_scale, up_A, up_B, up_weight):
+    """
+    Shared Umeyama core: estimate R, s from A/B centered on ref_A/ref_B
+    (the centroid for the plain alignment, the anchor point for the
+    anchor-pinned alignment), then set t so ref_A <- s*R*ref_B exactly.
+    """
+    n = A.shape[0]
+    A_c = A - ref_A
+    B_c = B - ref_B
+    #cross variance matrix - 3x3 for the 3 axes of the two sets of points
+    H = B_c.T @ A_c / n
+
+    if up_A is not None and up_B is not None:
+        up_A = np.asarray(up_A, dtype=float) / np.linalg.norm(up_A)
+        up_B = np.asarray(up_B, dtype=float) / np.linalg.norm(up_B)
+        if up_weight is None:
+            # Scale the vector term to match H's own magnitude (not an
+            # arbitrary count), since up_A/up_B are unit vectors but H's
+            # entries reflect the actual position units/scale of A and B.
+            up_weight = np.linalg.norm(H)
+        #this adds in the rotation needed to keep up = up, but now, up is always y axis
+        H = H + up_weight * np.outer(up_B, up_A)
+
+    U, S, Vt = np.linalg.svd(H)
+    D = np.diag([1, 1, 1])
+    R = Vt.T @ D @ U.T
+
+    if with_scale:
+        var_B = (B_c ** 2).sum() / n
+        s = np.sum(S) / var_B
+    else:
+        s = 1.0
+
+    t = ref_A - s * R @ ref_B
+    return R, s, t
+
+
+def _umeyama_finish(A, B, R, s, t, label_A, label_B, out_path):
+    B_aligned = (s * R @ B.T).T + t
+    rmse = np.sqrt(np.mean(np.sum((A - B_aligned) ** 2, axis=1)))
+    mean_dist = np.mean(np.sqrt(np.sum((A - B_aligned) ** 2, axis=1)))
+    charts = ortho_charts(A,label_A = label_A , dataB=B_aligned, label_B = label_B, title = "test2", out_path = out_path, rmse = rmse, mean_dist = mean_dist )
+    return B_aligned, rmse, mean_dist
+
+
+def umeyama_align(A, B, label_A = "A", label_B = "B", out_path = None, with_scale=True, up_A=None, up_B=None, up_weight=None, skip_indices=None):
     """
     Align point set B onto point set A using the Umeyama algorithm
     (rotation + uniform scale + translation; no independent per-axis scaling).
@@ -193,10 +238,15 @@ def umeyama_align(A, B, label_A = "A", label_B = "B", out_path = None, with_scal
     same cross-covariance matrix, weighted by up_weight (defaults to N, i.e.
     equal total influence to all the position correspondences combined).
 
+    R and s minimize the total residual across all points; t is set so the
+    centroids coincide. For pinning a specific point exactly (e.g. to measure
+    drift from a start frame), use umeyama_align_anchor instead -- reusing
+    this function's R/s with an anchor-forced t is not the least-squares
+    solution for that constraint and inflates the error.
+
     Returns: R (3x3 rotation), s (float scale), t (3,) translation, B_aligned (N,3), rmse (float)
     """
     A = np.asarray(A, dtype=float)
-    print("A)")
     B = np.asarray(B, dtype=float)
     print("A,B", len (A), len(B))
 
@@ -206,52 +256,46 @@ def umeyama_align(A, B, label_A = "A", label_B = "B", out_path = None, with_scal
             mask[list(skip_indices)] = False
             A, B = A[mask], B[mask]
 
-    n = A.shape[0]
     centroid_A = A.mean(axis=0)
     centroid_B = B.mean(axis=0)
-    A_c = A - centroid_A
-    B_c = B - centroid_B
-    #cross variance matrix - 3x3 for the 3 axes of the two sets of points
-    H = B_c.T @ A_c / n
+    R, s, t = _umeyama_solve(A, B, centroid_A, centroid_B, with_scale, up_A, up_B, up_weight)
+    B_aligned, rmse, mean_dist = _umeyama_finish(A, B, R, s, t, label_A, label_B, out_path)
+    return R, s, t, B_aligned, rmse
 
-    if up_A is not None and up_B is not None:
-        up_A = np.asarray(up_A, dtype=float) / np.linalg.norm(up_A)
-        up_B = np.asarray(up_B, dtype=float) / np.linalg.norm(up_B)
-        if up_weight is None:
-            # Scale the vector term to match H's own magnitude (not an
-            # arbitrary count), since up_A/up_B are unit vectors but H's
-            # entries reflect the actual position units/scale of A and B.
-            up_weight = np.linalg.norm(H)
-        #this adds in the rotation needed to keep up = up, but now, up is always y axis    
-        H = H + up_weight * np.outer(up_B, up_A)
 
-    U, S, Vt = np.linalg.svd(H)
-    D = np.diag([1, 1, 1])
-    R = Vt.T @ D @ U.T
+def umeyama_align_anchor(A, B, label_A = "A", label_B = "B", out_path = None, with_scale=True, up_A=None, up_B=None, up_weight=None, anchor_index=None, skip_indices=None):
+    """
+    Umeyama alignment constrained to pin A[anchor_index]/B[anchor_index]
+    together exactly (e.g. frame 0), for measuring drift from that point
+    rather than minimizing the overall trace error.
 
-    if with_scale:
-        var_B = (B_c ** 2).sum() / n
-        s = np.sum(S) / var_B
-    else:
-        s = 1.0
+    This is NOT umeyama_align with t swapped for an anchor-forced value --
+    that mismatches R/s (fit to minimize centroid-referenced error) against
+    a different translation, which increases error rather than concentrating
+    it at the anchor. Instead R and s here are solved directly for the
+    anchor-referenced problem: centering both point sets on the anchor point
+    (instead of the centroid) before the SVD/scale step is the correct
+    least-squares solution subject to the anchor coinciding exactly.
+
+    anchor_index indexes into A/B AFTER skip_indices has been applied.
+    Defaults to 0 (the first remaining point) if None.
+
+    Returns: R (3x3 rotation), s (float scale), t (3,) translation, B_aligned (N,3), rmse (float)
+    """
+    A = np.asarray(A, dtype=float)
+    B = np.asarray(B, dtype=float)
+    print("A,B", len (A), len(B))
+
+    if skip_indices is not None:
+            mask = np.ones(A.shape[0], dtype=bool)
+            mask[list(skip_indices)] = False
+            A, B = A[mask], B[mask]
 
     if anchor_index is None:
-        t = centroid_A - s * R @ centroid_B
-    else:
-        # Pin a specific point (e.g. frame 0) to coincide exactly, instead of
-        # matching centroids. R and s are still estimated from all points,
-        # but translation is set so error is zero at anchor_index and grows
-        # from there, instead of being spread/hidden across the whole trace.
-        t = A[anchor_index] - s * R @ B[anchor_index]
-    B_aligned = (s * R @ B.T).T + t
-    rmse = np.sqrt(np.mean(np.sum((A - B_aligned) ** 2, axis=1)))
-    mean_dist = np.mean(np.sqrt(np.sum((A - B_aligned) ** 2, axis=1)))
-    #print("Rotation matrix:\n", R)
-    #print("Scale factor:", s)
-    #print("Translation vector:\n", t)
-    #print("RMSE after alignment:", rmse)
-    per_point_err = np.linalg.norm(A - B_aligned, axis=1)
-    #print("Per-point error:\n", per_point_err)   
-    charts = ortho_charts(A,label_A = label_A , dataB=B_aligned, label_B = label_B, title = "test2", out_path = out_path, rmse = rmse, mean_dist = mean_dist )
-         
+        anchor_index = 0
+
+    ref_A = A[anchor_index]
+    ref_B = B[anchor_index]
+    R, s, t = _umeyama_solve(A, B, ref_A, ref_B, with_scale, up_A, up_B, up_weight)
+    B_aligned, rmse, mean_dist = _umeyama_finish(A, B, R, s, t, label_A, label_B, out_path)
     return R, s, t, B_aligned, rmse

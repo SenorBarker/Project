@@ -5,7 +5,15 @@
       "Bash(python -c \"import sys; print\\(sys.executable\\)\")",
       "Bash(pip show *)",
       "Bash(/opt/conda/envs/Msc2/bin/python -c ' *)",
-      "Bash(python3 -c ' *)"
+      "Bash(python3 -c ' *)",
+      "Bash(singularity exec *)",
+      "WebSearch",
+      "Bash(last -x dbarker)",
+      "Bash(dmesg -T)",
+      "Bash(ps -eo pid,uid,rss,comm --sort=-rss)",
+      "Bash(getent passwd *)",
+      "Bash(python3 /tmp/claude-21990/-cs-student-project-msc-2025-cgvi-dbarker/5cbabf3d-86d5-47a7-94b0-de781b3d288b/scratchpad/fix_nb2.py)",
+      "Bash(python3 -c \"import json; json.load\\(open\\('/cs/student/project_msc/2025/cgvi/dbarker/src/AA_TROPEA_GPSTESTS.ipynb'\\)\\); print\\('valid json'\\)\")"
     ],
     "additionalDirectories": [
       "/tmp"

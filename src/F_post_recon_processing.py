@@ -128,8 +128,8 @@ def load_VGGT_trace(sparse_reconstruction_dir, frames_dir=None):
     rotation_t = np.transpose(extrinsic[:, :3, :3], (0, 2, 1))
     positions = -np.einsum("nij,nj->ni", rotation_t, extrinsic[:, :3, 3])
     chart = ortho_charts(positions, "VGGT", dataB=None, title="VGGT")
-    world_pos_dict = positions_to_frame_dict(positions, frames_dir)
-    return positions, world_pos_dict
+    pos_dict = positions_to_frame_dict(positions, frames_dir)
+    return positions, pos_dict
 
 
 def load_lingbot_map_trace(output_dir):

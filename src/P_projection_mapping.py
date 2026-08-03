@@ -32,10 +32,6 @@ FRAME_NAME_FMT = "{:04d}.jpg"
 MASK_NAME_FMT = "{:04d}.png"
 
 
-
-
-
-
 def check_frame_count(preds, frames_dir, name_fmt=FRAME_NAME_FMT):
     """predictions.npz stores no source filenames -- build_frame_index() assumes
     its rows are in the same sorted-by-frame-number order as the files in
