@@ -49,14 +49,6 @@ def run_vggt_omega(image_dir, output_dir, checkpoint_path, vggt_omega_dir,
     and a scene.glb (confidence-filtered point cloud + camera frustums) into
     output_dir.
 
-    This Pascal-class GPU (CC 6.1) has no flash-attention support, and
-    PyTorch's memory-efficient SDPA kernel here only covers {Half, Float} --
-    not BFloat16. VGGTOmega.forward() auto-selects bf16 autocast whenever
-    torch.cuda.is_bf16_supported() is True, which silently falls back to the
-    O(N^2) math kernel and OOMs at 8 frames @ 512px. Forcing fp16 instead
-    lets the efficient O(N) kernel engage, with no change to the model's
-    documented usage.
-
     Args:
         image_dir        : path-like — directory of input images
         output_dir        : path-like — where predictions.npz / scene.glb are written
@@ -83,11 +75,6 @@ def run_vggt_omega(image_dir, output_dir, checkpoint_path, vggt_omega_dir,
     from vggt_omega.utils.load_fn import load_and_preprocess_images
     from vggt_omega.utils.pose_enc import encoding_to_camera
     from visual_util import predictions_to_glb
-
-    torch.backends.cuda.enable_flash_sdp(False)
-    torch.backends.cuda.enable_math_sdp(False)
-    torch.backends.cuda.enable_mem_efficient_sdp(True)
-    torch.cuda.is_bf16_supported = lambda *a, **kw: False
 
     image_names = sorted(glob.glob(str(image_dir / "*")))
     image_names = [p for p in image_names if p.lower().endswith(_IMG_EXTS)]

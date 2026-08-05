@@ -237,6 +237,20 @@ def _positions_only(cam_pose_dict):
     return {k: v[:3, 3] for k, v in cam_pose_dict.items()}
 
 
+def _render_bev_tiles(technique, recon, cam_pose_dict, out_dir, n_frames, thresholds=(0, 2, 5, 8, 10)):
+    """BEV tiles are a diagnostic render, not a correctness check -- a threshold with
+    no points above it (e.g. a genuinely low-confidence recon) means a blank tile,
+    not a failed technique, so this must not raise and fail the whole run_attempt."""
+    for c in thresholds:
+        try:
+            BEV_tile_render_PM(
+                recon, extra_indices=list(cam_pose_dict.keys()), masks_dir=None,
+                confidence_threshold=c, out_path=out_dir / f"{technique}_{n_frames}_BEV_c{c}.png",
+            )
+        except Exception as e:
+            print(f"[{technique} @ {n_frames}] BEV render skipped for conf_thresh={c}: {e}")
+
+
 def _save_cam_pose_csv(path, cam_pose_dict, full_pose):
     """frame,x,y,z -- or frame,x,y,z,r00..r22 (flattened rotation) when full_pose."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -396,10 +410,7 @@ def run_density_sweep(case_name, experiment, video_path, start_3D_recon, end_3D_
                                            cam_pose_dict, data_storage["full_pose"])
                     if data_storage["render_bev"]:
                         recon = cut3r_to_reconstruction(frames_dir, cut3r_output_dir())
-                        BEV_tile_render_PM(
-                            recon, extra_indices=list(cam_pose_dict.keys()), masks_dir=None,
-                            confidence_threshold=10, out_path= out_dir / f"{technique}_{n_frames}_BEV.png",
-                        )
+                        _render_bev_tiles(technique, recon, cam_pose_dict, out_dir, n_frames)
                     r = align_and_score("CUT3R", _positions_only(cam_pose_dict), runtime, gps_dict)
                     r["n_frames"] = n_frames
                     r["recon_interframe_interval"] = stride_frames
@@ -422,11 +433,7 @@ def run_density_sweep(case_name, experiment, video_path, start_3D_recon, end_3D_
                                            cam_pose_dict, data_storage["full_pose"])
                     if data_storage["render_bev"]:
                         recon = cut3r_to_reconstruction(frames_dir, cut3r_output_dir() / "revisit")
-                        BEV_tile_render_PM(
-                            recon, extra_indices=list(cam_pose_dict.keys()), masks_dir=None,
-                            confidence_threshold=0,
-                            out_path= out_dir / f"{technique}_{n_frames}_BEV.png",
-                        )
+                        _render_bev_tiles(technique, recon, cam_pose_dict, out_dir, n_frames)
                     r = align_and_score("CUT3R_Revisit", _positions_only(cam_pose_dict), runtime, gps_dict)
                     r["n_frames"] = n_frames
                     r["recon_interframe_interval"] = stride_frames
@@ -445,10 +452,7 @@ def run_density_sweep(case_name, experiment, video_path, start_3D_recon, end_3D_
                                            cam_pose_dict, data_storage["full_pose"])
                     if data_storage["render_bev"]:
                         recon = lingbot_map_to_reconstruction(frames_dir, lingbot_map_dir())
-                        BEV_tile_render_PM(
-                            recon, extra_indices=list(cam_pose_dict.keys()), masks_dir=None,
-                            confidence_threshold=10, out_path= out_dir / f"{technique}_{n_frames}_BEV.png",
-                        )
+                        _render_bev_tiles(technique, recon, cam_pose_dict, out_dir, n_frames)
                     r = align_and_score("lingbot-map", _positions_only(cam_pose_dict), runtime, gps_dict)
                     r["n_frames"] = n_frames
                     r["recon_interframe_interval"] = stride_frames
@@ -473,10 +477,7 @@ def run_density_sweep(case_name, experiment, video_path, start_3D_recon, end_3D_
                         _save_cam_pose_csv(vggt_o_output_dir() / "CAM_poses" / "poses.csv",
                                            cam_pose_dict, data_storage["full_pose"])
                     if data_storage["render_bev"]:
-                        BEV_tile_render_PM(
-                            recon, extra_indices=list(cam_pose_dict.keys()), masks_dir=None,
-                            confidence_threshold=10, out_path= out_dir / f"{technique}_{n_frames}_BEV.png",
-                        )
+                        _render_bev_tiles(technique, recon, cam_pose_dict, out_dir, n_frames)
                     r = align_and_score("VGGT-Omega", _positions_only(cam_pose_dict), runtime, gps_dict)
                     r["n_frames"] = n_frames
                     r["recon_interframe_interval"] = stride_frames
@@ -506,10 +507,7 @@ def run_density_sweep(case_name, experiment, video_path, start_3D_recon, end_3D_
                         # real per-pixel confidence (see megasam_to_reconstruction's docstring),
                         # so any nonzero threshold against its all-ones placeholder filters
                         # out every point and renders a blank BEV.
-                        BEV_tile_render_PM(
-                            recon, extra_indices=list(cam_pose_dict.keys()), masks_dir=None,
-                            confidence_threshold=0, out_path= out_dir / f"{technique}_{n_frames}_BEV.png",
-                        )
+                        _render_bev_tiles(technique, recon, cam_pose_dict, out_dir, n_frames, thresholds=(0,))
                     r = align_and_score("MegaSaM", _positions_only(cam_pose_dict), runtime, gps_dict)
                     r["n_frames"] = n_frames
                     r["recon_interframe_interval"] = stride_frames
@@ -539,10 +537,7 @@ def run_density_sweep(case_name, experiment, video_path, start_3D_recon, end_3D_
                                            cam_pose_dict, data_storage["full_pose"])
                     if data_storage["render_bev"]:
                         recon = vggt_plain_to_reconstruction(frames_dir, vggt_output_dir)
-                        BEV_tile_render_PM(
-                            recon, extra_indices=list(cam_pose_dict.keys()), masks_dir=None,
-                            confidence_threshold=10, out_path= out_dir / f"{technique}_{n_frames}_BEV.png",
-                        )
+                        _render_bev_tiles(technique, recon, cam_pose_dict, out_dir, n_frames)
                     r = align_and_score("VGGT", _positions_only(cam_pose_dict), runtime, gps_dict)
                     r["n_frames"] = n_frames
                     r["recon_interframe_interval"] = stride_frames

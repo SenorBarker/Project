@@ -590,7 +590,7 @@ def _ortho_view_from_recon(recon, conf_thresh=5,
     return new_view, ortho_params, out_width, out_height
 
 
-def BEV_tile_render_PM(recon, extra_indices, masks_dir=None, splat_radius=2,
+def BEV_tile_render_PM(recon, extra_indices, masks_dir=None, splat_radius=1,
                    confidence_threshold=5, margin_frac=0.05, out_path=None):
     """Static orthographic top-down (BEV) still, fused from many frames via
     composite_overlay's masking/upsample/z-buffer machinery -- no .ply export, no
