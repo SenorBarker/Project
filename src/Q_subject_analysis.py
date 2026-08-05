@@ -22,19 +22,21 @@ from G_transforms_alignments import umeyama_align, ortho_charts , transform_RST,
 #3D analysis
 from F_post_recon_processing import Reconstruction
 from P_projection_mapping import load_frame_inputs, unproject_masked
+
 #helper function to turn a mask into world coordinates
-def mask_centroid_model_position(mask, rgb_full, depth_low, conf_low, intrinsic_full, extrinsic, margin=8):
+def mask_centroid_model_position(mask, rgb_full, depth_low, conf_low, lowres_rgb, intrinsic_full, extrinsic, margin=8):
     """World-space centroid (mean of unprojected points) of a mask's covered pixels,
     in VGGT-O model space. Returns None if the mask is empty.
-    INPUTS 
-    mask - from YOLO at the moment 
+    INPUTS
+    mask - from YOLO at the moment
     rgb_full - the image frame. needed to bilinear upsampe every mask pixel - can remove if it's too heavy
     depth_low - the depth map from 3d recon
-    intrnsic full 
+    lowres_rgb - preds["images"] row, the model's own colour input (joint_bilateral_upsample's anchor colour)
+    intrnsic full
     extrinsics
-  
+
     """
-    world_points, _ = unproject_masked(mask, rgb_full, depth_low, conf_low, intrinsic_full, extrinsic, margin)#gets the positions of each 
+    world_points, _ = unproject_masked(mask, rgb_full, depth_low, conf_low, lowres_rgb, intrinsic_full, extrinsic, margin)#gets the positions of each
     #value in the mas
     return world_points.mean(dim=0) if world_points is not None else None # does the average
 
@@ -46,8 +48,8 @@ def subject_model_positions(recon, masks_dir):
     '''
     subject_positions = {}
     for frame_idx in recon.frame_to_row:
-        rgb, mask, depth, depth_conf, intrinsic, extrinsic, sigma, _ = load_frame_inputs(recon, frame_idx, masks_dir)
-        pos = mask_centroid_model_position(mask, rgb, depth, depth_conf, intrinsic, extrinsic, margin=8)
+        rgb, mask, depth, depth_conf, lowres_rgb, intrinsic, extrinsic, sigma, _ = load_frame_inputs(recon, frame_idx, masks_dir)
+        pos = mask_centroid_model_position(mask, rgb, depth, depth_conf, lowres_rgb, intrinsic, extrinsic, margin=8)
         subject_positions[frame_idx] = pos.cpu().numpy() if pos is not None else np.full(3, np.nan)
     return subject_positions
 
@@ -112,31 +114,16 @@ def subject_direction(sub_real_dict):
     return direction_report
 
 
-def subject_to_metric_and_gps_space(
-            subject_recon,
-            masks_dir,
-            lat_0, lon_0,
-            R_mw , s_mw,t_mw
-           ):
-    """Turn YOLO masks + VGGT-O subject recon into GPS positions.
+  
 
-    Projects mask centroids through model to world to get
-    metres and lat/lon -- no separate RS-space hop needed since
-    cam_poses_realworld_dict is already in real-world space.
-
-    recon: an already-loaded Reconstruction (see E_post_recon_processing.Reconstruction.load) --
-    shared with the other VGGT-O consumers (VGGT_O_preds_to_ply_export, projection_mapping_sequence)
-    so predictions.npz is only read/moved to the GPU once.
-
-    Returns list of (frame_number, lat, lon) for frames with a valid detection,
-    the subject positions in metres (array and frame-keyed dict), and the
-    R_cr/s_cr/t_cr alignment itself -- reusable to bring anything else in
-    VGGT-O's raw cam0 space (e.g. VGGT_O_preds_to_ply_export's point clouds)
-    into the same real-world metric frame.
-     """     
+def find_mask_centroids_in_model_space(subject_recon,
+            masks_dir,):
+    '''Calculates the centroids of all masks in a folder at once
+    - Averages u,v,depth, thresholded and weighted by confidence
+    - Unprojects them to model space using intrinsics and extrinsics
+        '''
     #subject centroids found and transformed into model space
     from P_projection_mapping import MASK_NAME_FMT
-
     frame_keys = sorted(subject_recon.frame_to_row, key=subject_recon.frame_to_row.get)  # row order
     print(frame_keys)
     intrinsics = subject_recon.preds["intrinsic"].cpu().numpy()   # (N,3,3) native res, matches depth
@@ -144,16 +131,13 @@ def subject_to_metric_and_gps_space(
     depths     = subject_recon.preds["depth"].cpu().numpy()       # (N,h,w) native res
     h, w       = depths.shape[1:]
     
-    #load masks - make them model sized. frame 3880's mask file (and any other frame
-    #missing/unreadable on disk -- no detection that frame) reads as None from cv2.imread;
-    #treat that as an empty mask instead of letting cv2.resize crash on it.
+    #load masks - make them model sized.
+    #treat missing files as an empty mask instead of letting cv2.resize crash on it.
     mask_imgs = [cv2.imread(str(Path(masks_dir) / MASK_NAME_FMT.format(f)), cv2.IMREAD_GRAYSCALE) for f in frame_keys]
     masks = np.stack([
         cv2.resize(img, (w, h), interpolation=cv2.INTER_NEAREST) > 0 if img is not None else np.zeros((h, w), dtype=bool)
         for img in mask_imgs
     ])   # (N,h,w) bool, resized to the depth's own native resolution -- no bilateral upsampling
-
-
     ys, xs      = np.indices((h, w))
     mask_counts = masks.sum(axis=(1, 2))
     valid       = mask_counts > 0
@@ -182,10 +166,28 @@ def subject_to_metric_and_gps_space(
     R = extrinsics[:, :3, :3]   # model-to-cam rotation, per frame
     t = extrinsics[:, :3, 3]
     #cam -> model space: P_model = R^T @ (P_cam - t)
-    subject_centorid_model = np.einsum("nij,nj->ni", np.transpose(R, (0, 2, 1)), subject_centroids_cam - t)
+    subject_cenroids_model  = np.einsum("nij,nj->ni", np.transpose(R, (0, 2, 1)), subject_centroids_cam - t)
+    return  subject_cenroids_model,frame_keys
 
+def subject_to_metric_and_gps_space(
+            subject_recon,
+            masks_dir,
+            lat_0, lon_0,
+            R_mw , s_mw,t_mw
+           ):
+    """Turn  masks +  recon into GPS positions.
+
+    Projects mask centroids through model to world to get
+    metres and lat/lon -- no separate RS-space hop needed since
+    cam_poses_realworld_dict is already in real-world space.
+
+    recon: an already-loaded Reconstruction (see E_post_recon_processing.Reconstruction.load) --
+    shared with the other VGGT-O consumers (VGGT_O_preds_to_ply_export, projection_mapping_sequence)
+    so predictions.npz is only read/moved to the GPU once.
+    """   
+    subject_cenroids_model,frame_keys = find_mask_centroids_in_model_space(subject_recon, masks_dir)
     #moves straight from 3d-recon space into real-world frame of reference (metres, NESW)
-    sub_real      = transform_RST(subject_centorid_model, R_mw, s_mw, t_mw)
+    sub_real      = transform_RST(subject_cenroids_model, R_mw, s_mw, t_mw)
     sub_real_dict = dict(zip(frame_keys, sub_real))   # frame-keyed, same pattern as cam_poses_realworld_dict
     sub_latlon, _ = metres_to_latlong(sub_real, lat_0, lon_0)
     valid = ~np.isnan(sub_latlon).any(axis=1)

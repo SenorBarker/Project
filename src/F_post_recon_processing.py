@@ -59,21 +59,27 @@ def load_cut3r_trace(camera_dir):
     return np.array(positions)
 
 
-def load_cut3r_trace_v2(camera_dir):
+def load_cut3r_trace_v2(camera_dir, full_pose=False):
     """Extract camera positions from CUT3R's camera/*.npz, frame-number-named at
     the source (post naming-fix, see E_cut3r_recon.py). Returns (positions,
     world_pos_dict) like load_lingbot_map_trace/load_reality_scan_trace -- no
-    frames_dir cross-referencing needed, the filename is the frame number."""
+    frames_dir cross-referencing needed, the filename is the frame number.
+
+    full_pose=True returns the full 4x4 c2w matrix per frame in world_pos_dict
+    instead of just the translation -- the npz already stores the whole pose,
+    this only changes how much of it gets kept."""
     files = sorted(Path(camera_dir).glob("*.npz"))
-    world_pos_dict = {int(f.stem): np.load(f)["pose"][:3, 3] for f in files}
-    print(world_pos_dict)
-    positions = np.array([world_pos_dict[k] for k in sorted(world_pos_dict)])
-    print(positions.shape)
+    raw_poses = {int(f.stem): np.load(f)["pose"] for f in files}
+    positions = np.array([raw_poses[k][:3, 3] for k in sorted(raw_poses)])
     chart = ortho_charts(positions, "CUT3R", dataB=None, title="CUT3R")
+    if full_pose:
+        world_pos_dict = raw_poses
+    else:
+        world_pos_dict = {k: v[:3, 3] for k, v in raw_poses.items()}
     return positions, world_pos_dict
 
 
-def load_megasam_trace(npz_path, frames_dir=None):
+def load_megasam_trace(npz_path, frames_dir=None, full_pose=False):
     """Extract camera positions from a MegaSaM {scene}_sgd_cvd_hr.npz output.
 
     Row-order only -- no frame numbers in the data itself -- so frames_dir is
@@ -81,13 +87,17 @@ def load_megasam_trace(npz_path, frames_dir=None):
     to A_Config.frames_for_recon_dir() (the currently active case/experiment,
     same zero-arg convention as the rest of A_Config) -- pass frames_dir
     explicitly when comparing against a different/older frame set than whatever
-    is currently active via set_case()."""
+    is currently active via set_case().
+
+    full_pose=True returns the full 4x4 c2w matrix per frame in world_pos_dict
+    instead of just the translation -- cam_c2w already stores the whole pose."""
     if frames_dir is None:
         frames_dir = frames_for_recon_dir()
     data = np.load(npz_path)
     positions = data["cam_c2w"][:, :3, 3]
     chart = ortho_charts(positions, "MegaSAM", dataB=None, title="MegaSAM")
-    world_pos_dict = positions_to_frame_dict(positions, frames_dir)
+    poses = data["cam_c2w"] if full_pose else positions
+    world_pos_dict = positions_to_frame_dict(poses, frames_dir)
     return positions, world_pos_dict
 
 
@@ -114,28 +124,43 @@ def load_VGGT_O_trace(npz_path, frames_dir=None):
     return positions, world_pos_dict
 
 
-def load_VGGT_trace(sparse_reconstruction_dir, frames_dir=None):
+def load_VGGT_trace(sparse_reconstruction_dir, frames_dir=None, full_pose=False):
     """Extract camera positions from plain-VGGT's extrinsic.npy (demo_colmap.py).
     frames_dir defaults to A_Config.frames_for_recon_dir(), same as load_megasam_trace.
 
     Frame 0 is identity by construction -- verified directly against real output
     (Data/01_walk/034_VGGT_output/.../extrinsic.npy: rotation ~= I, translation ~= 0
     to ~1e-4 float noise), same as VGGT-O and lingbot-map. No cam0-anchoring step
-    needed, positions are already in that frame."""
+    needed, positions are already in that frame.
+
+    full_pose=True returns the full 4x4 c2w matrix per frame in pos_dict instead
+    of just the translation -- built from extrinsic.npy's rotation, which the
+    default path already computes but discards."""
     if frames_dir is None:
         frames_dir = frames_for_recon_dir()
     extrinsic = np.load(Path(sparse_reconstruction_dir) / "extrinsic.npy")  # (N,3,4), w2c
     rotation_t = np.transpose(extrinsic[:, :3, :3], (0, 2, 1))
     positions = -np.einsum("nij,nj->ni", rotation_t, extrinsic[:, :3, 3])
     chart = ortho_charts(positions, "VGGT", dataB=None, title="VGGT")
-    pos_dict = positions_to_frame_dict(positions, frames_dir)
+    if full_pose:
+        poses = np.zeros((len(positions), 4, 4))
+        poses[:, :3, :3] = rotation_t
+        poses[:, :3, 3] = positions
+        poses[:, 3, 3] = 1
+    else:
+        poses = positions
+    pos_dict = positions_to_frame_dict(poses, frames_dir)
     return positions, pos_dict
 
 
-def load_lingbot_map_trace(output_dir):
+def load_lingbot_map_trace(output_dir, full_pose=False):
     """Extract camera positions from run_lingbot_map()'s per-frame npz output
     (B_lingbot_map.py). Already frame-number-keyed by filename -- no frames_dir
-    cross-referencing needed."""
+    cross-referencing needed.
+
+    full_pose=True returns the full 4x4 c2w matrix per frame in world_pos_dict
+    instead of just the translation -- built from extrinsic_w2c's rotation,
+    which the default path already computes but discards."""
     files = sorted(Path(output_dir).glob("*.npz"))
     world_pos_dict = {}
     for f in files:
@@ -143,8 +168,18 @@ def load_lingbot_map_trace(output_dir):
         d = np.load(f)
         extrinsic = d["extrinsic_w2c"]  # (3, 4), world-to-camera
         rotation_t = extrinsic[:3, :3].T
-        world_pos_dict[frame_num] = -rotation_t @ extrinsic[:3, 3]
-    positions = np.array([world_pos_dict[k] for k in sorted(world_pos_dict)])
+        translation = -rotation_t @ extrinsic[:3, 3]
+        if full_pose:
+            pose = np.eye(4)
+            pose[:3, :3] = rotation_t
+            pose[:3, 3] = translation
+            world_pos_dict[frame_num] = pose
+        else:
+            world_pos_dict[frame_num] = translation
+    positions = np.array([
+        (world_pos_dict[k][:3, 3] if full_pose else world_pos_dict[k])
+        for k in sorted(world_pos_dict)
+    ])
     chart = ortho_charts(positions, "lingbot-map", dataB=None, title="lingbot-map")
     return positions, world_pos_dict
 
@@ -196,32 +231,44 @@ class Reconstruction:
         origin = -R0 @ extrinsic[:3, 3]
         return R0, origin
 
-    def cam_pos_dict(self):
-        """Camera centres in VGGT-O model space (cam0 frame), keyed by source frame number."""
+    def cam_pos_dict(self, full_pose=False):
+        """Camera centres in VGGT-O model space (cam0 frame), keyed by source frame number.
+
+        full_pose=True returns the full 4x4 c2w pose per frame, also re-expressed
+        in the cam0 frame, instead of just the translation. apply_cam0_frame only
+        re-expresses positions (shift by -origin, rotate by R0.T); the equivalent
+        for a rotation matrix under that same change of world frame is R0.T @ R_cw.
+        New derivation, not exercised elsewhere -- sanity-check frame 0's rotation
+        comes out ~identity (same invariant the position-only path already relies on)."""
         extrinsic  = self.preds["extrinsic"].cpu().numpy()
         rotation_t = np.transpose(extrinsic[:, :3, :3], (0, 2, 1))
         cam_pos    = -np.einsum("nij,nj->ni", rotation_t, extrinsic[:, :3, 3])
         R0, origin = self._cam0_anchor()
         cam_pos    = apply_cam0_frame(cam_pos, R0, origin)
-        return {frame: cam_pos[row] for frame, row in self.frame_to_row.items()}
+        if not full_pose:
+            return {frame: cam_pos[row] for frame, row in self.frame_to_row.items()}
+        rotation_cam0 = np.einsum("ij,njk->nik", R0.T, rotation_t)
+        poses = np.zeros((len(cam_pos), 4, 4))
+        poses[:, :3, :3] = rotation_cam0
+        poses[:, :3, 3] = cam_pos
+        poses[:, 3, 3] = 1
+        return {frame: poses[row] for frame, row in self.frame_to_row.items()}
 
     def VGGT_O_preds_to_ply_export(self, out_dir=None, conf_threshold=1.5,R = None, t=None, s=None, multi=False, centre_to_cam00 = None):
-        """Write one coloured .ply per frame, in cam0's frame with CUT3R's axis
-        convention (x right, y up, z forward) so VGGT-O and CUT3R traces can be
-        viewed side by side in the same viewer (see D_cut3r_vis.py).
+        """
+        Option 1:
+        Write one coloured .ply per frame, in cam0's frame  (x right, y up, z forward) 
 
-        R, s, t: optional real-world alignment (rotation, scale, translation)
-        from umeyama_align, e.g. subject_to_metric_and_gps_space's R_cr/s_cr/t_cr
-        -- the same transform already applied to the subject trace, so points
-        land in real-world metres instead of VGGT-O's raw (unitless) cam0 scale.
-        Applied before the axis flip below, since it was derived against
-        cam_pos_dict(), which is in that same raw, un-flipped frame. Left in
-        raw cam0 scale if not given.
+        Option 2:
+        R, s, t: real-world alignment (rotation, scale, translation)
+        Get them from  umeyama_align VS GT GPS data 
+
+        Option 3:
+        just applyl scale for calibrated distances, but without rotating into real-world position
 
         out_dir defaults to preds_path's own folder / "ply", next to the
         predictions.npz/.glb this Reconstruction was loaded from.
-        Files are named by source frame number, not row index, since
-        predictions.npz rows carry no frame numbers of their own.
+        Files are named by source frame number.
         """
         out_dir = Path(out_dir) if out_dir is not None else self.preds_path.parent / "ply"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -233,8 +280,8 @@ class Reconstruction:
             points = unproject(self.preds["depth"][row], self.preds["intrinsic"][row], self.preds["extrinsic"][row])
             points = points.reshape(-1, 3).cpu().numpy()
 
-
-            #rotate and scale to real world (values derived from umeyay align vs calibrated RS trace)
+            #OPTIONAL TRANSFORMATIONS 
+            #ROTATE and SCALE to real world (values derived from umeyay align vs calibrated RS trace)
             if multi ==True:
                 points = (points@R.T  * s +t )#cam to real world
                 if centre_to_cam00 is not None:
@@ -243,7 +290,7 @@ class Reconstruction:
                 else: 
                     centre_to_cam00 = t
                     points = points -t
-            #scale to metres if no transform is needed
+            #SCALE to metres if no transform is needed
             elif s is not None:
                 points = points * s 
 

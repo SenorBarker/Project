@@ -13,7 +13,10 @@
       "Bash(ps -eo pid,uid,rss,comm --sort=-rss)",
       "Bash(getent passwd *)",
       "Bash(python3 /tmp/claude-21990/-cs-student-project-msc-2025-cgvi-dbarker/5cbabf3d-86d5-47a7-94b0-de781b3d288b/scratchpad/fix_nb2.py)",
-      "Bash(python3 -c \"import json; json.load\\(open\\('/cs/student/project_msc/2025/cgvi/dbarker/src/AA_TROPEA_GPSTESTS.ipynb'\\)\\); print\\('valid json'\\)\")"
+      "Bash(python3 -c \"import json; json.load\\(open\\('/cs/student/project_msc/2025/cgvi/dbarker/src/AA_TROPEA_GPSTESTS.ipynb'\\)\\); print\\('valid json'\\)\")",
+      "Bash(mount)",
+      "Bash(timeout 6 df -h \"/workspaces/knuckles_drive/Data/07_Tropea_cafe/090_assets/\")",
+      "Bash(python3 -m py_compile src/F_transpose_to_recon_objects.py src/P_projection_mapping.py src/U_rendering.py src/F_post_recon_processing.py Experiments/templates/AA_cam_pose_sweeps.py)"
     ],
     "additionalDirectories": [
       "/tmp"

@@ -221,15 +221,30 @@ def BEV_render(
         width=1920,
         height=1080,
         margin_frac=0.05,#fraction of the fitted extent left as empty border on each side
-        splat_radius=2,
         camera_forward=(0.0, -1.0, 0.0),#looking straight down -Y
         camera_up=(0.0, 0.0, -1.0),#defines which world direction is "up" in the frame (north)
         background_color=(30, 30, 30),
+        out_path=None,
     ):
         """Single orthographic top-down still spanning all plys in ply_dir --
         bounds are read off the data itself (with margin_frac padding), not hardcoded.
-        Two streaming passes over the plys (bounds, then splat) on GPU tensors so the
-        whole capture's points never have to be merged/held in memory at once."""
+
+        width/height are a floor, not a fixed size: the canvas fits the point cloud's
+        bounding box at whichever scale is tighter -- the one that fills width x height,
+        or (if the point cloud's own density needs more than that to give each point its
+        own pixel) the one implied by that density, growing the canvas past width x
+        height rather than collapsing multiple points onto the same output pixel.
+        One point = one pixel, no splatting -- splatting a fixed-size shape over
+        already-dense points just re-flattens the fine per-pixel detail upsampling
+        produced in the first place.
+
+        Two streaming passes over the plys (bounds, then paint) on GPU tensors so the
+        whole capture's points never have to be merged/held in memory at once.
+
+        out_path: if given, save there instead of assets_dir()/asset_name() and skip
+        add_to_report -- for callers (e.g. the density sweep) that manage their own
+        output location/bookkeeping. Default None preserves the original
+        assets_dir()-based behavior."""
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         ply_paths = sorted(Path(ply_dir).glob(pattern))
         if not ply_paths:
@@ -243,10 +258,11 @@ def BEV_render(
         right = right / right.norm()
         true_up = torch.linalg.cross(right, forward)
 
-        # pass 1: stream each ply just to find the global XY extent
+        # pass 1: stream each ply just to find the global XY extent and point count
         #find largest value in cam space x = x y = z
         x_min, x_max = float("inf"), float("-inf")
         y_min, y_max = float("inf"), float("-inf")
+        n_points = 0
         for ply_path in ply_paths:
             proj = _ortho_project_ply_to_cam(ply_path, right, true_up, forward, device)
             if proj is None:
@@ -254,6 +270,7 @@ def BEV_render(
             x_cam, y_cam, _, _ = proj
             if x_cam.numel() == 0:
                 continue
+            n_points += x_cam.numel()
             x_min = min(x_min, x_cam.min().item()); x_max = max(x_max, x_cam.max().item())
             y_min = min(y_min, y_cam.min().item()); y_max = max(y_max, y_cam.max().item())
         if x_min == float("inf"):
@@ -265,28 +282,33 @@ def BEV_render(
         y_min -= margin_frac * y_range; y_max += margin_frac * y_range
         x_range, y_range = x_max - x_min, y_max - y_min
 
-        #fit to image resolution
-        # preserve aspect ratio: fit the tighter axis, letterbox the other within width x height
-        scale = min(width / x_range, height / y_range)
-        cx, cy = width / 2, height / 2
-        x_center, y_center = (x_min + x_max) / 2, (y_min + y_max) / 2
+        # scale that fits the (padded) bounding box into width x height, preserving
+        # aspect ratio -- same as before, this is the floor.
+        fit_scale = min(width / x_range, height / y_range)
+        # scale implied by the point cloud's own density -- average spacing between
+        # points, assuming a roughly uniform 2D scatter across the bounded area, so
+        # each point gets ~1 output pixel to itself instead of several points
+        # colliding onto the same pixel.
+        avg_spacing = (x_range * y_range / n_points) ** 0.5
+        native_scale = 1.0 / avg_spacing
 
-        #splatting to fill space - point size
-        offsets = [(dx, dy) for dx in range(-splat_radius, splat_radius + 1)
-                             for dy in range(-splat_radius, splat_radius + 1)
-                             if dx * dx + dy * dy <= splat_radius ** 2 + 0.5]
-        offs_dx = torch.tensor([o[0] for o in offsets], device=device)
-        offs_dy = torch.tensor([o[1] for o in offsets], device=device)
-        k = len(offsets)
+        # never shrink below the requested floor, but grow past it if the data is
+        # denser than that -- expand the canvas rather than losing detail.
+        scale = max(fit_scale, native_scale)
+        out_width = max(width, round(x_range * scale))
+        out_height = max(height, round(y_range * scale))
+        cx, cy = out_width / 2, out_height / 2
+        x_center, y_center = (x_min + x_max) / 2, (y_min + y_max) / 2
 
         #canvas setup
         background = torch.tensor(background_color, dtype=torch.float32, device=device) / 255
-        canvas = background.tile((height, width, 1)).clone()
-        zbuffer = torch.full((height, width), float("inf"), device=device)
+        canvas = background.tile((out_height, out_width, 1)).clone()
+        zbuffer = torch.full((out_height, out_width), float("inf"), device=device)
         flat_canvas = canvas.view(-1, 3)
         flat_zbuffer = zbuffer.view(-1)
 
-        # pass 2: stream each ply again, this time splatting straight into the shared canvas
+        # pass 2: stream each ply again, this time painting straight into the shared
+        # canvas -- one point, one pixel.
         for ply_path in ply_paths:
             proj = _ortho_project_ply_to_cam(ply_path, right, true_up, forward, device)
             if proj is None:
@@ -298,32 +320,34 @@ def BEV_render(
             u = scale * (x_cam - x_center) + cx
             v = -scale * (y_cam - y_center) + cy
 
-            n = u.shape[0]
-            u_rep = u.round().long().repeat_interleave(k) + offs_dx.repeat(n)
-            v_rep = v.round().long().repeat_interleave(k) + offs_dy.repeat(n)
-            z_rep = z_cam.repeat_interleave(k)
-            c_rep = c.repeat_interleave(k, dim=0)
+            u_i = u.round().long()
+            v_i = v.round().long()
 
-            in_bounds = (u_rep >= 0) & (u_rep < width) & (v_rep >= 0) & (v_rep < height)
-            u_rep, v_rep, z_rep, c_rep = u_rep[in_bounds], v_rep[in_bounds], z_rep[in_bounds], c_rep[in_bounds]
+            in_bounds = (u_i >= 0) & (u_i < out_width) & (v_i >= 0) & (v_i < out_height)
+            u_i, v_i, z_i, c_i = u_i[in_bounds], v_i[in_bounds], z_cam[in_bounds], c[in_bounds]
 
-            flat_idx = v_rep * width + u_rep
+            flat_idx = v_i * out_width + u_i
             # closer to the (downward-looking) camera than what's currently buffered -> paint over
-            in_front = z_rep < flat_zbuffer[flat_idx]
-            flat_idx, z_rep, c_rep = flat_idx[in_front], z_rep[in_front], c_rep[in_front]
+            in_front = z_i < flat_zbuffer[flat_idx]
+            flat_idx, z_i, c_i = flat_idx[in_front], z_i[in_front], c_i[in_front]
 
-            # z-buffer: draw far-to-near within this ply so nearer splats win where they overlap
-            order = torch.argsort(-z_rep)
-            flat_idx, c_rep = flat_idx[order], c_rep[order]
+            # z-buffer: draw far-to-near within this ply so nearer points win where they collide
+            order = torch.argsort(-z_i)
+            flat_idx, c_i = flat_idx[order], c_i[order]
 
-            flat_zbuffer[flat_idx] = z_rep[order]
-            flat_canvas[flat_idx] = c_rep
+            flat_zbuffer[flat_idx] = z_i[order]
+            flat_canvas[flat_idx] = c_i
 
         img = (canvas.clamp(0, 1) * 255).byte().cpu().numpy()
-        outpath = assets_dir() / f"{asset_name()}_BEV_render_{model}.png"
+        if out_path is None:
+            outpath = assets_dir() / f"{asset_name()}_BEV_render_{model}.png"
+        else:
+            outpath = Path(out_path)
+            outpath.parent.mkdir(parents=True, exist_ok=True)
         Image.fromarray(img).save(outpath)
 
-        add_to_report({
-            f"BEV_render_{model}": to_report_path(outpath),
-        })
+        if out_path is None:
+            add_to_report({
+                f"BEV_render_{model}": to_report_path(outpath),
+            })
         return 

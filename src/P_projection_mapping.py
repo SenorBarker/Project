@@ -13,6 +13,8 @@ Pipeline:
   6. Composite with a z-buffer (nearest point wins per output pixel)
 """
 
+from pathlib import Path
+
 import numpy as np
 import cv2
 import torch
@@ -75,10 +77,23 @@ def footprint_size(full_res_shape, lowres_shape):
     return full_w / low_w, full_h / low_h
 
 
-def joint_bilateral_upsample(lowres_depth, lowres_conf, full_rgb, sigma_xy, radius=1, conf_thresh = 5):
+def joint_bilateral_upsample(lowres_depth, lowres_conf, lowres_rgb, full_rgb, sigma_xy, radius=1, conf_thresh = 5):
     """Upsample lowres_depth (H', W') to full_rgb's (H, W) resolution, guided by color.
     Weight = spatial gaussian (sigma fixed = footprint size, baked in via the 0.5
-    factor below) * color gaussian (sigma = local color variance, auto per-pixel)."""
+    factor below) * color gaussian (sigma = local color variance, auto per-pixel).
+
+    lowres_rgb: the model's own low-res color input (preds["images"][row], HWC) --
+    the anchor color for each low-res depth sample is read directly from this,
+    not approximated by nearest-sampling full_rgb. The low-res image was produced
+    by a bicubic-weighted blend of a full-res neighbourhood (see
+    vggt_omega/utils/load_fn.py's preprocessing), not a single full-res pixel, so
+    sampling full_rgb at one nearest point was a materially different (noisier)
+    signal than what the depth network actually saw.
+
+    Returns (depth_out, valid) -- valid is False wherever none of the 4 sampled
+    low-res corners had usable support (all failed conf_thresh), so depth_out there
+    is meaningless (weight_sum ~0) and must be masked out by the caller rather than
+    treated as a real depth of ~0."""
     low_h, low_w = lowres_depth.shape
     full_h, full_w, _ = full_rgb.shape
     sx, sy = sigma_xy # upsample ratio . pixels per point
@@ -98,7 +113,7 @@ def joint_bilateral_upsample(lowres_depth, lowres_conf, full_rgb, sigma_xy, radi
     #sweep over the blob-sized point
     for dy in (0,1):
         for dx in (0,1):
-            nx = gx0 + dx # pixel to sample from 
+            nx = gx0 + dx # pixel to sample from
             ny = gy0 + dy
             in_bounds = (nx >= 0) & (nx < low_w) & (ny >= 0) & (ny < low_h)
 
@@ -107,41 +122,62 @@ def joint_bilateral_upsample(lowres_depth, lowres_conf, full_rgb, sigma_xy, radi
 
             d_sample = lowres_depth[ny_c, nx_c]#measure depth here
             v_sample = valid[ny_c, nx_c]#is this a valid depth
+            sample_rgb = lowres_rgb[ny_c, nx_c]  # the model's own colour for this depth sample -- no full-res round-trip
 
-            #upscale, push to centre first, then scale, coords
-            cx_full = ((nx_c.float() + 0.5) * sx - 0.5).round().long().clamp(0, full_w - 1)
-            cy_full = ((ny_c.float() + 0.5) * sy - 0.5).round().long().clamp(0, full_h - 1)
-            sample_rgb = full_rgb[cy_full, cx_full]  # (H, W, 3)
-
+            
             #bilinear
             spatial_w = (1 - (gx - nx.float()).abs()).clamp(min=0) * (1 - (gy - ny.float()).abs()).clamp(min=0)
-
-
+            #colour linear
             color_dist2 = ((full_rgb - sample_rgb) ** 2).sum(dim=-1)
+            if (color_dist2 > 3).any():
+                print("COLOUR ERROR", color_dist2)
+            print(color_dist2.max())
             color_w = 1 - color_dist2 / 3
-
             w = spatial_w * color_w * in_bounds.float() * v_sample
+            
+            '''
+            # double-Gaussian joint bilateral weight, same variable names as your function
+            # (needs two new params this function doesn't have: sigma_s, sigma_r)
+            sigma_s = 0.1
+            sigma_r = 0.1
+            spatial_dist2 = (gx - nx.float()) ** 2 + (gy - ny.float()) ** 2      # ||p-q||^2
+            spatial_w = torch.exp(-spatial_dist2 / (2 * sigma_s ** 2))          # domain Gaussian
+            color_dist2 = ((full_rgb - sample_rgb) ** 2).sum(dim=-1)             # ||I_p-I_q||^2
+            color_w = torch.exp(-color_dist2 / (2 * sigma_r ** 2))              # range Gaussian
+            w = spatial_w * color_w * in_bounds.float() * v_sample               # same combine as your code
+            '''
+      
 
             out_depth += w * d_sample
             weight_sum += w
 
-    depth_out = out_depth / weight_sum.clamp_min(1e-6)
+    valid = weight_sum > 1e-6
+    depth_out = out_depth / weight_sum.clamp_min(1e-6)# normalise to 1
 
-   
-    return depth_out
-
-
+    return depth_out, valid
 
 
 
-def reproject(points_world, intrinsic_ref, extrinsic_ref):
+
+
+def reproject(points_world, intrinsic_ref, extrinsic_ref, ortho_params=None):
+    """ortho_params: optional (scale_x, scale_y, cx, cy) -- when given, projects
+    orthographically (fixed scale, no perspective divide) instead of through
+    intrinsic_ref's pinhole model. z is still returned either way, for the z-buffer."""
     R = extrinsic_ref[:, :3]
     t = extrinsic_ref[:, 3]
     points_ref = points_world @ R.T + t
+    z = points_ref[..., 2]
+
+    if ortho_params is not None:
+        scale_x, scale_y, cx, cy = ortho_params
+        u = points_ref[..., 0] * scale_x + cx
+        v = points_ref[..., 1] * scale_y + cy
+        valid = torch.ones_like(z, dtype=torch.bool)
+        return u, v, z, valid
 
     fx, fy = intrinsic_ref[0, 0], intrinsic_ref[1, 1]
     cx, cy = intrinsic_ref[0, 2], intrinsic_ref[1, 2]
-    z = points_ref[..., 2]
     valid = z > 1e-6
     z_safe = torch.where(valid, z, torch.ones_like(z))
 
@@ -187,10 +223,10 @@ def get_full_res_camera(preds, idx, full_shape):
     return intrinsic_full, preds["extrinsic"][idx], (sx, sy)
 
 
-def crop_to_mask_region(mask, extra_rgb, depth_low, conf_low, intrinsic_full, margin=8):
+def crop_to_mask_region(mask, extra_rgb, depth_low, conf_low, lowres_rgb, intrinsic_full, margin=8):
     """
-    Crop extra_rgb/mask (full-res) and depth_low/conf_low (low-res) to the
-    mask's bounding box, with shifted intrinsics to match the crop origin.
+    Crop extra_rgb/mask (full-res) and depth_low/conf_low/lowres_rgb (low-res) to
+    the mask's bounding box, with shifted intrinsics to match the crop origin.
     fiddly but will massively reduce compute time.
     """
     h_full, w_full = extra_rgb.shape[:2]
@@ -214,19 +250,22 @@ def crop_to_mask_region(mask, extra_rgb, depth_low, conf_low, intrinsic_full, ma
 
     depth_crop = depth_low[y0_lr:y1_lr, x0_lr:x1_lr]
     conf_crop = conf_low[y0_lr:y1_lr, x0_lr:x1_lr]
+    lowres_rgb_crop = lowres_rgb[y0_lr:y1_lr, x0_lr:x1_lr]
 
     intrinsic_crop = intrinsic_full.clone()
     intrinsic_crop[0, 2] -= x0
     intrinsic_crop[1, 2] -= y0
 
-    return rgb_crop, mask_crop, depth_crop, conf_crop, intrinsic_crop, (x0, y0)
+    return rgb_crop, mask_crop, depth_crop, conf_crop, lowres_rgb_crop, intrinsic_crop, (x0, y0)
 
 
-def unproject_masked(mask, rgb_full, depth_low, conf_low, intrinsic_full, extrinsic, margin=8, conf_thresh=5):
+def unproject_masked(mask, rgb_full, depth_low, conf_low, lowres_rgb, intrinsic_full, extrinsic, margin=8, conf_thresh=5):
     """Unproject the pixels covered by `mask` to VGGT-O world-space points.
 
     mask, rgb_full: full-resolution, matching the source frame.
     depth_low, conf_low: this camera's native-resolution row from preds["depth"]/preds["depth_conf"].
+    lowres_rgb: this camera's native-resolution row from preds["images"] (HWC) -- the
+    model's own colour input, used as joint_bilateral_upsample's per-sample anchor colour.
     intrinsic_full: this camera's intrinsic already scaled to rgb_full's resolution (see get_full_res_camera).
     extrinsic: this camera's extrinsic, unscaled -- straight from preds["extrinsic"].
 
@@ -238,12 +277,13 @@ def unproject_masked(mask, rgb_full, depth_low, conf_low, intrinsic_full, extrin
         return None, None
 
     sigma = footprint_size(rgb_full.shape[:2], depth_low.shape)
-    rgb_crop, mask_crop, depth_crop, conf_crop, intrinsic_crop, _ = crop_to_mask_region(
-        mask, rgb_full, depth_low, conf_low, intrinsic_full, margin=margin
+    rgb_crop, mask_crop, depth_crop, conf_crop, lowres_rgb_crop, intrinsic_crop, _ = crop_to_mask_region(
+        mask, rgb_full, depth_low, conf_low, lowres_rgb, intrinsic_full, margin=margin
     )
-    depth_crop_full = joint_bilateral_upsample(depth_crop, conf_crop, rgb_crop, sigma, conf_thresh=conf_thresh)
+    depth_crop_full, valid_crop = joint_bilateral_upsample(depth_crop, conf_crop, lowres_rgb_crop, rgb_crop, sigma, conf_thresh=conf_thresh)
     world_points = unproject(depth_crop_full, intrinsic_crop, extrinsic)
-    return world_points[mask_crop], rgb_crop[mask_crop]#just the 1s from the mask are returned
+    keep = mask_crop & valid_crop
+    return world_points[keep], rgb_crop[keep]#mask pixels with no usable upsample support are dropped too
 
 
 def _as_recon_list(recon):
@@ -264,27 +304,28 @@ def find_recon_for_frame(recon, frame_idx):
 
 def load_frame_inputs(recon, frame_idx, masks_dir=None):
     """Everything needed to unproject one frame: full-res RGB, mask, this frame's
-    native-resolution depth/confidence, full-res-scaled intrinsic + extrinsic, and
-    which shard (recon_idx) it came from -- so the caller can tell whether two frames
-    live in the same recon's model space or need point_cloud_xforms to bring them together
-    (recon_idx is always 0 for a single-recon caller)."""
+    native-resolution depth/confidence/colour, full-res-scaled intrinsic + extrinsic,
+    and which shard (recon_idx) it came from -- so the caller can tell whether two
+    frames live in the same recon's model space or need point_cloud_xforms to bring
+    them together (recon_idx is always 0 for a single-recon caller)."""
 
     recon_idx, recon, row = find_recon_for_frame(recon, frame_idx)
 
     if row is None:
-        return None, None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None, None
 
     rgb_full = load_full_res_frame(recon.frames_dir, frame_idx)
 
     if rgb_full is None:
-        return None, None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None, None
 
     mask = load_mask(frame_idx, masks_dir)
     intrinsic_full, extrinsic, sigma = get_full_res_camera(recon.preds, row, rgb_full.shape[:2])
     depth = recon.preds["depth"][row]
     depth_conf = recon.preds["depth_conf"][row]
+    lowres_rgb = recon.preds["images"][row].permute(1, 2, 0)  # (3,H,W) -> (H,W,3), the model's own colour input
 
-    return rgb_full, mask, depth, depth_conf, intrinsic_full, extrinsic, sigma, recon_idx
+    return rgb_full, mask, depth, depth_conf, lowres_rgb, intrinsic_full, extrinsic, sigma, recon_idx
 
 
 def composite_overlay(recon,
@@ -295,7 +336,9 @@ def composite_overlay(recon,
                       depth_margin=0.0,
                       splat_radius=1,
                       new_view=None,
-                      conf_thresh = 5
+                      conf_thresh = 5,
+                      ortho_params=None,
+                      canvas_size=None
                       ):
     """Paint cam(main)'s own photo with pixels from cam(extra) frames wherever
     cam(extra) has something CLOSER TO CAM(MAIN)
@@ -319,29 +362,41 @@ def composite_overlay(recon,
     # preds arrays are indexed by row position, so translate before indexing preds.
     recons = _as_recon_list(recon)
 
-    # Resolution is constant for the whole capture, so always size the canvas off
-    # recons[0]'s own row-0 frame (its anchor/reference frame -- same one
-    # get_full_res_camera below keys off) rather than off extra_indices[0], which is
-    # an arbitrary real frame number that may itself be missing on disk.
-    row0_frame_num = next(fn for fn, row in recons[0].frame_to_row.items() if row == 0)
-    full_h, full_w = load_full_res_frame(recons[0].frames_dir, row0_frame_num).shape[:2]
-
     if main_idx is not None:
+        # Resolution is constant for the whole capture, so always size the canvas off
+        # recons[0]'s own row-0 frame (its anchor/reference frame -- same one
+        # get_full_res_camera below keys off) rather than off extra_indices[0], which is
+        # an arbitrary real frame number that may itself be missing on disk.
+        row0_frame_num = next(fn for fn, row in recons[0].frame_to_row.items() if row == 0)
+        full_h, full_w = load_full_res_frame(recons[0].frames_dir, row0_frame_num).shape[:2]
 
-        main_rgb, _, depth_main, depth_conf_main, intrinsic_main_full, extrinsic_main, sigma_main, main_recon_idx = load_frame_inputs(recons, main_idx, masks_dir)
+        main_rgb, _, depth_main, depth_conf_main, lowres_rgb_main, intrinsic_main_full, extrinsic_main, sigma_main, main_recon_idx = load_frame_inputs(recons, main_idx, masks_dir)
         if main_rgb is None:
             raise ValueError(
                 f"main_idx {main_idx} not found in any recon shard's frame_to_row, "
                 f"or its image file is missing -- check it's within a shard's frame_range"
             )
-        depth_main_full = joint_bilateral_upsample(
-            depth_main, depth_conf_main, main_rgb, sigma_main, conf_thresh=conf_thresh
+        depth_main_full, valid_main = joint_bilateral_upsample(
+            depth_main, depth_conf_main, lowres_rgb_main, main_rgb, sigma_main, conf_thresh=conf_thresh
         )  # already in cam(main)'s own frame
 
         canvas = main_rgb.clone()
         zbuffer = depth_main_full.clone()  # what cam(main) currently believes is in front, per pixel
+        # pixels with no usable upsample support have a meaningless depth_main_full
+        # value -- set them to +inf ("nothing known here") so any extra frame's real
+        # point can paint over them, instead of a bogus near-zero depth blocking it.
+        zbuffer[~valid_main] = float("inf")
     else:
-        intrinsic_main_full, _, _ = get_full_res_camera(recons[0].preds, 0, (full_h, full_w))
+        # Synthetic/novel-view canvas defaults to HD, regardless of the source movie's
+        # native resolution -- a novel view's projected pixel spread can exceed native
+        # resolution, so tying canvas size to the source frame would be destructive.
+        # canvas_size (from _ortho_view_from_recon) overrides this when the point
+        # cloud's own density needs more than that.
+        full_h, full_w = canvas_size if canvas_size is not None else (1080, 1920)
+        if ortho_params is not None:
+            intrinsic_main_full = None  # unused by reproject() when ortho_params is set
+        else:
+            intrinsic_main_full, _, _ = get_full_res_camera(recons[0].preds, 0, (full_h, full_w))
         extrinsic_main = new_view
         main_recon_idx = 0  # shard 0 is ground truth -- new_view is expressed in its raw model space
         canvas = torch.zeros(full_h, full_w, 3, device=DEVICE)
@@ -350,6 +405,13 @@ def composite_overlay(recon,
     flat_canvas = canvas.view(-1, 3)
     flat_zbuffer = zbuffer.view(-1)
     subject_positions = {}
+
+    # circular splat disk (matches U_rendering.BEV_render's offset construction) --
+    # a square (all du,dv in range) would splat every point as a visible square.
+    splat_offsets = [(du, dv) for du in range(-splat_radius, splat_radius + 1)
+                              for dv in range(-splat_radius, splat_radius + 1)
+                              if du * du + dv * dv <= splat_radius ** 2 + 0.5]
+
     #Paint over the canvas
     #debug
     print(extra_indices)
@@ -357,20 +419,22 @@ def composite_overlay(recon,
         if extra_idx == main_idx:
             continue
         
-        extra_rgb, mask, depth_extra, depth_conf_extra, intrinsic_extra_full, extrinsic_extra, sigma_extra, extra_recon_idx = load_frame_inputs(recons, extra_idx, masks_dir)
+        extra_rgb, mask, depth_extra, depth_conf_extra, lowres_rgb_extra, intrinsic_extra_full, extrinsic_extra, sigma_extra, extra_recon_idx = load_frame_inputs(recons, extra_idx, masks_dir)
         if extra_rgb is None:
             continue
 
         if masks_dir is None:
             # masking is off entirely -- unproject the whole frame
-            depth_extra_full = joint_bilateral_upsample(depth_extra, depth_conf_extra, extra_rgb, sigma_extra, conf_thresh=conf_thresh)
+            depth_extra_full, valid_extra = joint_bilateral_upsample(depth_extra, depth_conf_extra, lowres_rgb_extra, extra_rgb, sigma_extra, conf_thresh=conf_thresh)
             world_points_extra = unproject(depth_extra_full, intrinsic_extra_full, extrinsic_extra).reshape(-1, 3)
             extra_rgb = extra_rgb.reshape(-1, 3)
+            valid_extra = valid_extra.reshape(-1)
+            world_points_extra, extra_rgb = world_points_extra[valid_extra], extra_rgb[valid_extra]
         else:
             # masking is on -- mask is None/empty here means no subject detected
             # this frame, not "no masks" -- unproject_masked already skips that case
             world_points_extra, extra_rgb = unproject_masked(
-                mask, extra_rgb, depth_extra, depth_conf_extra, intrinsic_extra_full, extrinsic_extra,
+                mask, extra_rgb, depth_extra, depth_conf_extra, lowres_rgb_extra, intrinsic_extra_full, extrinsic_extra,
                 conf_thresh=conf_thresh
             )
         if world_points_extra is None:
@@ -399,43 +463,175 @@ def composite_overlay(recon,
                 world_points_extra = ((world_points_extra - t_m) / s_m) @ R_m       # shared real-world -> main-model
 
         subject_positions[extra_idx] = world_points_extra.mean(dim=0)
-        u, v, z_in_main, valid = reproject(world_points_extra, intrinsic_main_full, extrinsic_main)
+        u, v, z_in_main, valid = reproject(world_points_extra, intrinsic_main_full, extrinsic_main, ortho_params=ortho_params)
         
         
         
-        #splatting here
-        for dv in range(-splat_radius, splat_radius + 1): 
-            for du in range(-splat_radius, splat_radius + 1): # target just 1 coordinate for every splate (i.e the same corner of every splat)
-                ui = (u + du).round().long() #this becomes the pixel location too be painted
-                vi = (v + dv).round().long()
-                in_canvas = valid & (ui >= 0) & (ui < full_w) & (vi >= 0) & (vi < full_h)#on screen check 
-                
-                #vectorise for speed
-                flat_idx = (vi * full_w + ui).clamp(0, full_h * full_w - 1)
-                flat_idx_v = flat_idx[in_canvas]
-                flat_z_v = z_in_main[in_canvas]
-                flat_rgb_v = extra_rgb[in_canvas]
+        #splatting here -- circular disk (splat_offsets), not every (du,dv) in the square
+        for du, dv in splat_offsets:
+            ui = (u + du).round().long() #this becomes the pixel location too be painted
+            vi = (v + dv).round().long()
+            in_canvas = valid & (ui >= 0) & (ui < full_w) & (vi >= 0) & (vi < full_h)#on screen check
 
-                # closer to cam(main) than cam(main)'s own depth there -> it's in front, paint over
-                in_front = flat_z_v < (flat_zbuffer[flat_idx_v] - depth_margin)
+            #vectorise for speed
+            flat_idx = (vi * full_w + ui).clamp(0, full_h * full_w - 1)
+            flat_idx_v = flat_idx[in_canvas]
+            flat_z_v = z_in_main[in_canvas]
+            flat_rgb_v = extra_rgb[in_canvas]
 
-                order = torch.argsort(flat_z_v[in_front])
-                idx_front = flat_idx_v[in_front][order]
-                z_front = flat_z_v[in_front][order]
-                rgb_front = flat_rgb_v[in_front][order]
+            # closer to cam(main) than cam(main)'s own depth there -> it's in front, paint over
+            in_front = flat_z_v < (flat_zbuffer[flat_idx_v] - depth_margin)
 
-                keep_mask = torch.ones_like(idx_front, dtype=torch.bool)
-                if idx_front.numel() > 1:
-                    keep_mask[1:] = idx_front[1:] != idx_front[:-1]
+            order = torch.argsort(flat_z_v[in_front])
+            idx_front = flat_idx_v[in_front][order]
+            z_front = flat_z_v[in_front][order]
+            rgb_front = flat_rgb_v[in_front][order]
 
-                winning_idx = idx_front[keep_mask]
-                winning_z = z_front[keep_mask]
-                winning_rgb = rgb_front[keep_mask]
+            keep_mask = torch.ones_like(idx_front, dtype=torch.bool)
+            if idx_front.numel() > 1:
+                keep_mask[1:] = idx_front[1:] != idx_front[:-1]
 
-                flat_zbuffer[winning_idx] = winning_z
-                flat_canvas[winning_idx] = winning_rgb
+            winning_idx = idx_front[keep_mask]
+            winning_z = z_front[keep_mask]
+            winning_rgb = rgb_front[keep_mask]
+
+            flat_zbuffer[winning_idx] = winning_z
+            flat_canvas[winning_idx] = winning_rgb
 
     return canvas, subject_positions
+
+
+def _ortho_view_from_recon(recon, conf_thresh=5,
+                            camera_forward=(0.0, 1.0, 0.0), camera_up=(0.0, 0.0, 1.0),
+                            margin_frac=0.05, width=1920, height=1080):
+    """Computes an orthographic top-down view (new_view extrinsic + ortho_params)
+    that fits recon's whole reconstruction, with margin_frac border. camera_forward/
+    camera_up default to the raw-model-space equivalent of U_rendering.BEV_render's
+    (0,-1,0)/(0,0,-1) defaults -- inverted to account for VGGT_O_preds_to_ply_export's
+    axis flip (points[:, 1:] *= -1), since this operates on the raw (pre-flip)
+    reconstruction, not exported plys.
+
+    width/height are a floor, not a fixed size -- see BEV_render's docstring in
+    U_rendering.py for why: the canvas grows past width x height if the point
+    cloud's own density needs more resolution than that to avoid collapsing
+    several points onto the same output pixel.
+
+    Bounds are derived per-frame via unproject(depth, intrinsic, extrinsic) from
+    recon.preds directly, in recon's own raw model space -- the same frame
+    composite_overlay's own point-painting already uses (get_full_res_camera/
+    load_frame_inputs read recon.preds directly too, with no cam0 re-anchoring).
+    This also makes _ortho_view_from_recon technique-agnostic: any Reconstruction
+    with depth/intrinsic/extrinsic in preds works, not just VGGT-Omega's
+    predictions.npz (which used to be re-read here for a precomputed,
+    VGGT-Omega-only world_points_from_depth key -- numerically near-identical to
+    this, since VGGT-Omega's raw extrinsic already has frame 0 ~= identity by
+    construction, same invariant every other technique's loader documents)."""
+    forward = torch.as_tensor(camera_forward, dtype=torch.float32, device=DEVICE)
+    forward = forward / forward.norm()
+    up = torch.as_tensor(camera_up, dtype=torch.float32, device=DEVICE)
+    right = torch.linalg.cross(forward, up)
+    right = right / right.norm()
+    true_up = torch.linalg.cross(right, forward)
+
+    depth_conf = recon.preds["depth_conf"]
+    world_points = torch.stack([
+        unproject(recon.preds["depth"][row], recon.preds["intrinsic"][row], recon.preds["extrinsic"][row])
+        for row in range(depth_conf.shape[0])
+    ])
+
+    valid = (depth_conf > conf_thresh).reshape(-1)
+    points = world_points.reshape(-1, 3)[valid]
+    n_points = points.shape[0]
+    if n_points == 0:
+        raise ValueError(
+            f"_ortho_view_from_recon: no points passed conf_thresh={conf_thresh} in any frame -- "
+            f"this recon's confidence values may be on a different scale than the default threshold "
+            f"assumes (e.g. MegaSaM has no real per-pixel confidence at all, see "
+            f"F_transpose_to_recon_objects.megasam_to_reconstruction), or genuinely low-confidence "
+            f"throughout. Try a lower confidence_threshold for this technique."
+        )
+
+    x_cam = (points @ right).cpu().numpy()
+    y_cam = (points @ true_up).cpu().numpy()
+
+    x_min, x_max = float(x_cam.min()), float(x_cam.max())
+    y_min, y_max = float(y_cam.min()), float(y_cam.max())
+    x_range, y_range = x_max - x_min, y_max - y_min
+    x_min -= margin_frac * x_range; x_max += margin_frac * x_range
+    y_min -= margin_frac * y_range; y_max += margin_frac * y_range
+    x_range, y_range = x_max - x_min, y_max - y_min
+
+    # scale that fits the (padded) bounding box into width x height (the floor),
+    # vs. scale implied by the point cloud's own density (avg spacing assuming a
+    # roughly uniform 2D scatter) -- never shrink below the floor, but grow past
+    # it if the data is denser than that. Note: n_points here is from the native
+    # (pre-upsample) world_points_from_depth grid, so this underestimates true
+    # density for composite_overlay's actual (upsampled, denser) render -- still
+    # strictly better than a fixed canvas, just not exactly matched.
+    fit_scale = min(width / x_range, height / y_range)
+    avg_spacing = (x_range * y_range / n_points) ** 0.5
+    native_scale = 1.0 / avg_spacing
+    scale = max(fit_scale, native_scale)
+    out_width = max(width, round(x_range * scale))
+    out_height = max(height, round(y_range * scale))
+    cx, cy = out_width / 2, out_height / 2
+    x_center, y_center = (x_min + x_max) / 2, (y_min + y_max) / 2
+
+    # new_view (3,4) extrinsic: R rows are the camera basis; points_ref = R@p + t,
+    # so points_ref[0] = right.p + t[0] etc. x_center/y_center are already expressed
+    # in this (right, true_up) basis (computed from x_cam/y_cam above), so t is just
+    # their negation directly -- no further rotation needed. t[2] (forward/depth) is
+    # left at 0 since depth isn't recentred, only used for z-buffer ordering.
+    R = torch.stack([right, true_up, forward], dim=0)
+    t = torch.tensor([-x_center, -y_center, 0.0], device=DEVICE)
+    new_view = torch.cat([R, t.unsqueeze(1)], dim=1)
+
+    ortho_params = (scale, -scale, cx, cy)  # y-flip matches image row-down convention
+    return new_view, ortho_params, out_width, out_height
+
+
+def BEV_tile_render_PM(recon, extra_indices, masks_dir=None, splat_radius=2,
+                   confidence_threshold=5, margin_frac=0.05, out_path=None):
+    """Static orthographic top-down (BEV) still, fused from many frames via
+    composite_overlay's masking/upsample/z-buffer machinery -- no .ply export, no
+    GPS/real-world alignment, works directly on the raw reconstruction in its own
+    (arbitrary/unscaled) model units -- any technique's Reconstruction works, not
+    just VGGT-Omega's, see F_transpose_to_recon_objects.py. Backplate only --
+    animating camera/subject position over time is a separate later compositor
+    (P_trace_overlayer.py).
+
+    out_path: if given, save there instead of assets_dir()/asset_name() and skip
+    add_to_report -- for callers (e.g. the density sweep) that manage their own
+    output location/bookkeeping and aren't part of the single case+experiment
+    report. Default None preserves the original assets_dir()-based behavior.
+
+    Returns subject_positions (raw model space, a free by-product of
+    composite_overlay) plus the new_view/ortho_params this canvas was built with,
+    so that later compositor can project onto this exact canvas without
+    recomputing (and risking drift from) the orthographic projection."""
+    new_view, ortho_params, out_width, out_height = _ortho_view_from_recon(
+        recon, conf_thresh=confidence_threshold, margin_frac=margin_frac
+    )
+
+    canvas, subject_positions = composite_overlay(
+        recon, main_idx=None, extra_indices=extra_indices, masks_dir=masks_dir,
+        splat_radius=splat_radius, new_view=new_view, conf_thresh=confidence_threshold,
+        ortho_params=ortho_params, canvas_size=(out_height, out_width),
+    )
+
+    img = (canvas.clamp(0, 1) * 255).byte().cpu().numpy()
+    if out_path is None:
+        outpath = assets_dir() / f"{asset_name()}_BEV_tile_render_PM.png"
+    else:
+        outpath = Path(out_path)
+        outpath.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(outpath), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+
+    if out_path is None:
+        add_to_report({"BEV_tile_render_PM": to_report_path(outpath)})
+    return subject_positions, new_view, ortho_params
+
+
 import subprocess
 from C_CSV_report import add_to_report
 def projection_mapping_sequence(

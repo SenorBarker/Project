@@ -158,7 +158,8 @@ def build_producer_prompt_pass1(brief: str, analysis_2d_for_decisions: dict, pro
     description_text = (query_dir / f"{case_name()}_description.txt").read_text(encoding="utf-8")
     objects_text = (query_dir / f"{case_name()}_objects.txt").read_text(encoding="utf-8")
     transcript_text = (query_dir / f"{case_name()}_transcript_full.txt").read_text(encoding="utf-8")
-    source_text = f"DESCRIPTION\n{description_text}\nOBJECTS\n{objects_text}\nAUDIO TRANSCRIPT\n{transcript_text}"
+    places_text  =   (query_dir / f"{case_name()}_places.txt").read_text(encoding="utf-8")                                                                        
+    source_text = f"DESCRIPTION\n{description_text}\nOBJECTS\n{objects_text}\nAUDIO TRANSCRIPT\n{transcript_text}\nPLACES{places_text}"
 
     return f"""
             MODE: draft
@@ -171,7 +172,7 @@ def build_producer_prompt_pass1(brief: str, analysis_2d_for_decisions: dict, pro
             SOURCE MATERIAL:
             {source_text}
 
-            2D ANALYSIS (subject: the cat) — deterministic measurement, treat as fact:
+            2D ANALYSIS — deterministic measurement, treat as fact:
             {analysis_2d_for_decisions}
 
             AVAILABLE FLAGS (things you may request by setting True — do not touch anything not listed):
