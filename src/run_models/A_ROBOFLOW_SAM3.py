@@ -181,8 +181,9 @@ def decode_mask_from_detection(det, image_shape):
 def track_subject_sam3(video_path, threshold=0.5,
                         requested_region="us", requested_plan="webrtc-gpu-large"):
     """
-    Self-contained: loads the current case's paper edit + derived flags
-    fresh from disk (not from in-memory notebook variables)
+    Pipeline version of this Self-contained: 
+    
+    loads the current case's paper edit + derived flags from disk 
 
     Reads the DRAFT paper edit, not the final one
 
@@ -210,9 +211,7 @@ def track_subject_sam3(video_path, threshold=0.5,
     import json
     import sys
     from collections import defaultdict
-    from A_Config import REPO_ROOT, case_dir, case_name, sam3_masks_dir
-    from C_CSV_report import add_to_report
-    from D_2d_analysis import contiguous_durations
+    from A_Config import REPO_ROOT, case_dir, case_name
 
     sys.path.insert(0, str(Path(REPO_ROOT) / "src" / "claude_agent"))
     #-------------------get data----------------
@@ -235,6 +234,48 @@ def track_subject_sam3(video_path, threshold=0.5,
     for det in detections:
         detections_by_beat[det["order"]].append(det)
 
+    return _run_sam3_tracking(video_path, detections_by_beat, threshold, requested_region, requested_plan)
+
+
+def run_sam3_manual(video_path, subject, start_frame=None, end_frame=None,
+                     threshold=0.5, requested_region="us", requested_plan="webrtc-gpu-large"):
+    """
+    Manual version of this: ad-hoc SAM3 run against a single video file for
+    one subject string -- no paper edit / case involved. start_frame/end_frame
+    optionally restrict the run to a sub-range (inclusive); default is the
+    whole video. Builds a single-span detections_by_beat and runs it through
+    the same tracking core track_subject_sam3 uses (including the
+    make_span_clip keyframe-aligned cut), so masks/report/return shape are
+    identical.
+    """
+    cap = cv2.VideoCapture(str(video_path))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+
+    start_frame = 0 if start_frame is None else start_frame
+    end_frame = total_frames - 1 if end_frame is None else end_frame
+
+    start_s = start_frame / fps
+    end_s = (end_frame + 1) / fps  # end_frame is inclusive; make_span_clip's end_s is not
+
+    detections_by_beat = {0: [{"subject": subject, "start_s": start_s, "end_s": end_s}]}
+
+    return _run_sam3_tracking(video_path, detections_by_beat, threshold, requested_region, requested_plan)
+
+
+def _run_sam3_tracking(video_path, detections_by_beat, threshold, requested_region, requested_plan):
+    """
+    Shared tracking core for track_subject_sam3 and run_sam3_manual: given a
+    video and a {order: [{"subject", "start_s", "end_s"}, ...]} dict, cuts a
+    subclip per span, streams each through the SAM3 workflow, writes masks,
+    and builds/reports the same analysis_2d_for_decisions shape either
+    caller returns.
+    """
+    from A_Config import sam3_masks_dir
+    from C_CSV_report import add_to_report
+    from D_2d_analysis import contiguous_durations
+
     #--------do tracking-------------
     print("initialising tracking")
     api_key = os.environ["ROBOFLOW_API_KEY"]
@@ -253,6 +294,7 @@ def track_subject_sam3(video_path, threshold=0.5,
 
         for det in beat_detections:
             subject = det["subject"]
+            print("SAM seeks subject:", subject)
             start_s = det["start_s"]
             end_s = det["end_s"]
             print(f"[beat {order}] making subclip {subject}")
@@ -280,9 +322,18 @@ def track_subject_sam3(video_path, threshold=0.5,
 
                 @session.on_data()
                 def on_data(data, metadata, start_frame=start_frame, width=width, height=height,
-                            beat_mask_dir=beat_mask_dir, beat_frames=beat_frames):
+                            beat_mask_dir=beat_mask_dir, beat_frames=beat_frames, _debug_count=[0]):
                     frame_idx = start_frame + int(metadata.frame_id) - 1
                     dets = unwrap_predictions(data.get("predictions"))
+                    # DEBUG: full raw payload for the first 3 frames, one-line
+                    # summary thereafter -- to see whether the server is
+                    # returning empty predictions vs an error/warning embedded
+                    # in the response, without flooding stdout for the whole clip.
+                    if _debug_count[0] < 3:
+                        print(f"[DEBUG frame {frame_idx}] raw data: {data}")
+                    else:
+                        print(f"[DEBUG frame {frame_idx}] raw predictions count: {len(dets)}")
+                    _debug_count[0] += 1
                     #turn detections into actual masks
                     n_instances = 0
                     for d in dets:

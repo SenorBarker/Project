@@ -237,7 +237,7 @@ def _positions_only(cam_pose_dict):
     return {k: v[:3, 3] for k, v in cam_pose_dict.items()}
 
 
-def _render_bev_tiles(technique, recon, cam_pose_dict, out_dir, n_frames, thresholds=(0, 2, 5, 8, 10)):
+def _render_bev_tiles(technique, recon, cam_pose_dict, out_dir, n_frames, thresholds=(0,1.2,1.5,2,3,5,6,7)):
     """BEV tiles are a diagnostic render, not a correctness check -- a threshold with
     no points above it (e.g. a genuinely low-confidence recon) means a blank tile,
     not a failed technique, so this must not raise and fail the whole run_attempt."""
@@ -354,7 +354,7 @@ def reset_sweep_state(case_name, experiment, confirm):
 #------------------------------------------------------------------
 
 def run_density_sweep(case_name, experiment, video_path, start_3D_recon, end_3D_recon,
-                       cam_poses_list, technique_order, flags, data_storage, project_root, gps_dict, VGGT_O_res = 256):
+                       cam_poses_list, technique_order, flags, data_storage, project_root, gps_dict=None, VGGT_O_res = 512):
     set_case(case_name, experiment)
     out_dir = case_dir() / "080_Experiments" /f"{experiment}"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -411,10 +411,13 @@ def run_density_sweep(case_name, experiment, video_path, start_3D_recon, end_3D_
                     if data_storage["render_bev"]:
                         recon = cut3r_to_reconstruction(frames_dir, cut3r_output_dir())
                         _render_bev_tiles(technique, recon, cam_pose_dict, out_dir, n_frames)
-                    r = align_and_score("CUT3R", _positions_only(cam_pose_dict), runtime, gps_dict)
-                    r["n_frames"] = n_frames
-                    r["recon_interframe_interval"] = stride_frames
-                    return r
+                    if gps_dict:
+                        r = align_and_score("CUT3R", _positions_only(cam_pose_dict), runtime, gps_dict)
+                        r["n_frames"] = n_frames
+                        r["recon_interframe_interval"] = stride_frames
+                        return r
+                    else:
+                        return
 
             elif technique == "CUT3R_Revisit":
                 technique_output_dir = cut3r_output_dir() / "revisit"
@@ -434,10 +437,13 @@ def run_density_sweep(case_name, experiment, video_path, start_3D_recon, end_3D_
                     if data_storage["render_bev"]:
                         recon = cut3r_to_reconstruction(frames_dir, cut3r_output_dir() / "revisit")
                         _render_bev_tiles(technique, recon, cam_pose_dict, out_dir, n_frames)
-                    r = align_and_score("CUT3R_Revisit", _positions_only(cam_pose_dict), runtime, gps_dict)
-                    r["n_frames"] = n_frames
-                    r["recon_interframe_interval"] = stride_frames
-                    return r
+                    if gps_dict:
+                        r = align_and_score("CUT3R_Revisit", _positions_only(cam_pose_dict), runtime, gps_dict)
+                        r["n_frames"] = n_frames
+                        r["recon_interframe_interval"] = stride_frames
+                        return r
+                    else:
+                        return
 
             elif technique == "lingbot-map":
                 technique_output_dir = lingbot_map_dir()
@@ -453,10 +459,13 @@ def run_density_sweep(case_name, experiment, video_path, start_3D_recon, end_3D_
                     if data_storage["render_bev"]:
                         recon = lingbot_map_to_reconstruction(frames_dir, lingbot_map_dir())
                         _render_bev_tiles(technique, recon, cam_pose_dict, out_dir, n_frames)
-                    r = align_and_score("lingbot-map", _positions_only(cam_pose_dict), runtime, gps_dict)
-                    r["n_frames"] = n_frames
-                    r["recon_interframe_interval"] = stride_frames
-                    return r
+                    if gps_dict:
+                        r = align_and_score("lingbot-map", _positions_only(cam_pose_dict), runtime, gps_dict)
+                        r["n_frames"] = n_frames
+                        r["recon_interframe_interval"] = stride_frames
+                        return r
+                    else:
+                        return
 
             elif technique == "VGGT-Omega":
                 technique_output_dir = vggt_o_output_dir()
@@ -478,11 +487,13 @@ def run_density_sweep(case_name, experiment, video_path, start_3D_recon, end_3D_
                                            cam_pose_dict, data_storage["full_pose"])
                     if data_storage["render_bev"]:
                         _render_bev_tiles(technique, recon, cam_pose_dict, out_dir, n_frames)
-                    r = align_and_score("VGGT-Omega", _positions_only(cam_pose_dict), runtime, gps_dict)
-                    r["n_frames"] = n_frames
-                    r["recon_interframe_interval"] = stride_frames
-                    return r
-
+                    if gps_dict:
+                        r = align_and_score("VGGT-Omega", _positions_only(cam_pose_dict), runtime, gps_dict)
+                        r["n_frames"] = n_frames
+                        r["recon_interframe_interval"] = stride_frames
+                        return r
+                    else:
+                        return
             elif technique == "MegaSaM":
                 technique_output_dir = case_dir() / "036_MEGASAM_output" / experiment_tag
                 def _run(frames_dir=frames_dir, n_frames=n_frames, stride_frames=stride_frames,
@@ -508,11 +519,12 @@ def run_density_sweep(case_name, experiment, video_path, start_3D_recon, end_3D_
                         # so any nonzero threshold against its all-ones placeholder filters
                         # out every point and renders a blank BEV.
                         _render_bev_tiles(technique, recon, cam_pose_dict, out_dir, n_frames, thresholds=(0,))
-                    r = align_and_score("MegaSaM", _positions_only(cam_pose_dict), runtime, gps_dict)
-                    r["n_frames"] = n_frames
-                    r["recon_interframe_interval"] = stride_frames
-                    return r
-
+                    if gps_dict:
+                        r = align_and_score("MegaSaM", _positions_only(cam_pose_dict), runtime, gps_dict)
+                        r["n_frames"] = n_frames
+                        r["recon_interframe_interval"] = stride_frames
+                        return r
+                    return
             elif technique == "VGGT":
                 technique_output_dir = case_dir() / "034_VGGT_output" / experiment_tag
                 def _run(frames_dir=frames_dir, n_frames=n_frames, stride_frames=stride_frames,
@@ -538,11 +550,13 @@ def run_density_sweep(case_name, experiment, video_path, start_3D_recon, end_3D_
                     if data_storage["render_bev"]:
                         recon = vggt_plain_to_reconstruction(frames_dir, vggt_output_dir)
                         _render_bev_tiles(technique, recon, cam_pose_dict, out_dir, n_frames)
-                    r = align_and_score("VGGT", _positions_only(cam_pose_dict), runtime, gps_dict)
-                    r["n_frames"] = n_frames
-                    r["recon_interframe_interval"] = stride_frames
-                    return r
-
+                    if gps_dict:
+                        r = align_and_score("VGGT", _positions_only(cam_pose_dict), runtime, gps_dict)
+                        r["n_frames"] = n_frames
+                        r["recon_interframe_interval"] = stride_frames
+                        return r
+                    else:
+                        return
             run_attempt(status_path, results_path, cam_poses_list, technique, cam_poses, _run)
             _cleanup_technique_output(technique_output_dir, data_storage)
 

@@ -131,7 +131,7 @@ def joint_bilateral_upsample(lowres_depth, lowres_conf, lowres_rgb, full_rgb, si
             color_dist2 = ((full_rgb - sample_rgb) ** 2).sum(dim=-1)
             if (color_dist2 > 3).any():
                 print("COLOUR ERROR", color_dist2)
-            print(color_dist2.max())
+            
             color_w = 1 - color_dist2 / 3
             w = spatial_w * color_w * in_bounds.float() * v_sample
             
@@ -338,7 +338,8 @@ def composite_overlay(recon,
                       new_view=None,
                       conf_thresh = 5,
                       ortho_params=None,
-                      canvas_size=None
+                      canvas_size=None,
+                      analyse = False
                       ):
     """Paint cam(main)'s own photo with pixels from cam(extra) frames wherever
     cam(extra) has something CLOSER TO CAM(MAIN)
@@ -377,7 +378,7 @@ def composite_overlay(recon,
                 f"or its image file is missing -- check it's within a shard's frame_range"
             )
         depth_main_full, valid_main = joint_bilateral_upsample(
-            depth_main, depth_conf_main, lowres_rgb_main, main_rgb, sigma_main, conf_thresh=conf_thresh
+            depth_main, depth_conf_main, lowres_rgb_main, main_rgb, sigma_main, conf_thresh=conf_thresh, analyse = analyse
         )  # already in cam(main)'s own frame
 
         canvas = main_rgb.clone()
@@ -414,7 +415,7 @@ def composite_overlay(recon,
 
     #Paint over the canvas
     #debug
-    print(extra_indices)
+    
     for extra_idx in extra_indices:
         if extra_idx == main_idx:
             continue
@@ -503,7 +504,8 @@ def composite_overlay(recon,
 
 def _ortho_view_from_recon(recon, conf_thresh=5,
                             camera_forward=(0.0, 1.0, 0.0), camera_up=(0.0, 0.0, 1.0),
-                            margin_frac=0.05, width=1920, height=1080):
+                            margin_frac=0.05, width=1920, height=1080, analyse = False,
+                            resolution="lores"):
     """Computes an orthographic top-down view (new_view extrinsic + ortho_params)
     that fits recon's whole reconstruction, with margin_frac border. camera_forward/
     camera_up default to the raw-model-space equivalent of U_rendering.BEV_render's
@@ -534,13 +536,100 @@ def _ortho_view_from_recon(recon, conf_thresh=5,
     true_up = torch.linalg.cross(right, forward)
 
     depth_conf = recon.preds["depth_conf"]
+    print("min depth", recon.preds["depth"].min())
     world_points = torch.stack([
         unproject(recon.preds["depth"][row], recon.preds["intrinsic"][row], recon.preds["extrinsic"][row])
         for row in range(depth_conf.shape[0])
     ])
+    #this is the last time they are per frame, so analyse here
+    if analyse:
+        print(world_points.shape)
+        import matplotlib.pyplot as plt
+        from scipy.spatial import cKDTree
+
+        min_cell_size = []
+        all_nn_dists = []
+        frame0_nn_dists = None
+        for frame in range(len(world_points)):
+            valid = (depth_conf[frame] > conf_thresh) & (recon.preds["depth"][frame] > 0)
+            pts = world_points[frame][valid]
+            pts = pts.detach().cpu().numpy()
+            pts = pts[np.isfinite(pts).all(axis=1)]
+            pts_xz = pts[:, [0, 2]]  # ignore y (height) -- top-down render plane
+            # A grid cell only collides two points if they're close on BOTH x and z
+            # simultaneously (a shared x or shared z alone isn't a collision -- see
+            # the (0,0)/(1,0)/(0,1)/(1,1) cross example). That joint condition is
+            # exactly Chebyshev (L-inf) distance, not two independent per-axis gaps.
+            # So the minimum square cell size that keeps every point in its own cell
+            # is the minimum Chebyshev nearest-neighbor distance across all points.
+            tree = cKDTree(pts_xz)
+            nn_dist, _ = tree.query(pts_xz, k=2, p=np.inf, workers=-1)
+            min_cell_size.append(nn_dist[:, 1].min())
+            all_nn_dists.append(nn_dist[:, 1])
+            if frame == 0:
+                frame0_nn_dists = nn_dist[:, 1]
+
+        all_nn_dists = np.concatenate(all_nn_dists)
+
+        plt.figure()
+        plt.plot(range(1, len(min_cell_size) + 1), min_cell_size)
+        plt.xlabel("frame")
+        plt.ylabel("min canvas cell size (x,z, no collisions)")
+        plt.xlim(1, 50)
+        plt.ylim(bottom=0)
+        outpath = assets_dir() / f"{asset_name()}_point_density.png"
+        plt.savefig(outpath)
+
+        plt.figure()
+        plt.hist(all_nn_dists, bins=100, range=(0, 1.4e-6))
+        plt.xlabel("nearest-neighbor cell size (x,z, no collisions)")
+        plt.ylabel("count")
+        hist_outpath = assets_dir() / f"{asset_name()}_point_density_hist.png"
+        plt.savefig(hist_outpath)
+
+        plt.figure()
+        weights = np.full(len(all_nn_dists), 100.0 / len(all_nn_dists))
+        plt.hist(all_nn_dists, bins=100, range=(0, 10 * 2e-6), cumulative=True, weights=weights)
+        plt.xlabel("nearest-neighbor cell size")
+        plt.ylabel("% of total")
+        plt.yticks(range(0, 25, 1))
+        plt.grid(axis="y", linewidth=0.5)
+        cumhist_outpath = assets_dir() / f"{asset_name()}_point_density_cumhist.png"
+        plt.savefig(cumhist_outpath)
+
+        plt.figure()
+        weights_frame0 = np.full(len(frame0_nn_dists), 100.0 / len(frame0_nn_dists))
+        plt.hist(frame0_nn_dists, bins=100, range=(0, 10 * 2e-6), cumulative=True, weights=weights_frame0)
+        plt.xlabel("nearest-neighbor cell size (frame 0 only)")
+        plt.ylabel("% of frame 0 total")
+        plt.yticks(range(0, 25, 1))
+        plt.grid(axis="y", linewidth=0.5)
+        frame0_outpath = assets_dir() / f"{asset_name()}_point_density_cumhist_frame0.png"
+        plt.savefig(frame0_outpath)
+
+        # scale = 1/cell_size: linear world-units-to-pixels conversion, same factor
+        # applied to both x and z (square cell) -- not squared, since this maps a
+        # linear distance to a linear pixel spacing, not an area to a point count.
+        # Same bars as chart 3 (identical data/bins/shape) -- only the x tick labels
+        # are remapped to scale (1/edge) instead of re-histogramming 1/d directly,
+        # which distorts the shape (most mass is at large d -> small scale, so it
+        # piles up at one end instead of tracing the same curve).
+        # NOT saved yet -- canvas-size-vs-scale (needs x_range/y_range, computed
+        # further down once we're in cam space) gets superimposed on a right-hand
+        # axis before this figure is written out, see below.
+        fig_scale, ax_scale = plt.subplots()
+        cellsize_edges = np.linspace(1.0 / 20000, 1.0 / 1769, 101)  # scale range: 20,000 (left/max) down to 1,769 (right/min)
+        ax_scale.hist(all_nn_dists, bins=cellsize_edges, cumulative=True, weights=weights, color="gray")
+        tick_edges = cellsize_edges[::10]
+        ax_scale.set_xticks(tick_edges, [f"{1.0 / e:,.0f}" for e in tick_edges], rotation=45)
+        ax_scale.set_xlabel("scale to make 1 pixel wide and tall")
+        ax_scale.set_ylabel("% of total")
+        ax_scale.set_yticks(range(0, 100, 5))
+        ax_scale.grid(axis="y", linewidth=0.5)
 
     valid = (depth_conf > conf_thresh).reshape(-1)
     points = world_points.reshape(-1, 3)[valid]
+    print(points.shape)
     n_points = points.shape[0]
     if n_points == 0:
         raise ValueError(
@@ -551,6 +640,7 @@ def _ortho_view_from_recon(recon, conf_thresh=5,
             f"throughout. Try a lower confidence_threshold for this technique."
         )
 
+    #camera now
     x_cam = (points @ right).cpu().numpy()
     y_cam = (points @ true_up).cpu().numpy()
 
@@ -560,7 +650,27 @@ def _ortho_view_from_recon(recon, conf_thresh=5,
     x_min -= margin_frac * x_range; x_max += margin_frac * x_range
     y_min -= margin_frac * y_range; y_max += margin_frac * y_range
     x_range, y_range = x_max - x_min, y_max - y_min
+    print("mins, maxes and ranges", x_min, x_max , x_range , y_min,  y_max,y_range )
 
+    if analyse:
+        # canvas size (pixels) needed to fit the whole padded bounding box at each
+        # candidate scale -- canvas_dim = spatial_range * scale = spatial_range / cell_size.
+        # Superimposed on the scale-cumulative-% figure (ax_scale) via a right-hand
+        # twin axis, sharing the same x positions/tick labels, so the two are read
+        # directly off one chart instead of two.
+        ax_canvas = ax_scale.twinx()
+        canvas_cellsizes = cellsize_edges[1:]  # skip 0 -> divide-by-zero
+        canvas_width = x_range / canvas_cellsizes
+        canvas_height = y_range / canvas_cellsizes
+        ax_canvas.plot(canvas_cellsizes, canvas_width, color="tab:orange", label="canvas width")
+        ax_canvas.plot(canvas_cellsizes, canvas_height, color="tab:green", label="canvas height")
+        ax_canvas.axhline(8192, color="orange", linewidth=2, linestyle="--", label="45MP width (8192px)")
+        ax_canvas.axhline(5464, color="green", linewidth=2, linestyle="--", label="45MP height (5464px)")
+        ax_canvas.set_ylabel("canvas size needed (pixels)")
+        ax_canvas.yaxis.set_major_formatter(lambda val, pos: f"{val:,.0f}")
+        ax_canvas.legend(loc="upper center", bbox_to_anchor=(0.5, -0.25), ncol=2)
+        scalehist_outpath = assets_dir() / f"{asset_name()}_point_density_scale_cumhist.png"
+        fig_scale.savefig(scalehist_outpath, bbox_inches="tight")
     # scale that fits the (padded) bounding box into width x height (the floor),
     # vs. scale implied by the point cloud's own density (avg spacing assuming a
     # roughly uniform 2D scatter) -- never shrink below the floor, but grow past
@@ -568,10 +678,16 @@ def _ortho_view_from_recon(recon, conf_thresh=5,
     # (pre-upsample) world_points_from_depth grid, so this underestimates true
     # density for composite_overlay's actual (upsampled, denser) render -- still
     # strictly better than a fixed canvas, just not exactly matched.
-    fit_scale = min(width / x_range, height / y_range)
-    avg_spacing = (x_range * y_range / n_points) ** 0.5
-    native_scale = 1.0 / avg_spacing
-    scale = max(fit_scale, native_scale)
+    if resolution == "hires":
+        # native_scale is density-derived and can blow up on dense/degenerate point
+        # clouds -- hardcode scale instead of computing it until that's made safe.
+        scale = 6000
+    else:
+        fit_scale = min(width / x_range, height / y_range)
+        avg_spacing = (x_range * y_range / n_points) ** 0.5
+        native_scale = 1.0 / avg_spacing
+        scale = max(fit_scale, native_scale)
+    print("scale - original" , scale)
     out_width = max(width, round(x_range * scale))
     out_height = max(height, round(y_range * scale))
     cx, cy = out_width / 2, out_height / 2
@@ -591,7 +707,8 @@ def _ortho_view_from_recon(recon, conf_thresh=5,
 
 
 def BEV_tile_render_PM(recon, extra_indices, masks_dir=None, splat_radius=1,
-                   confidence_threshold=5, margin_frac=0.05, out_path=None):
+                   confidence_threshold=5, margin_frac=0.05, out_path=None, analyse = False,
+                   resolution="lores"):
     """Static orthographic top-down (BEV) still, fused from many frames via
     composite_overlay's masking/upsample/z-buffer machinery -- no .ply export, no
     GPS/real-world alignment, works directly on the raw reconstruction in its own
@@ -610,7 +727,8 @@ def BEV_tile_render_PM(recon, extra_indices, masks_dir=None, splat_radius=1,
     so that later compositor can project onto this exact canvas without
     recomputing (and risking drift from) the orthographic projection."""
     new_view, ortho_params, out_width, out_height = _ortho_view_from_recon(
-        recon, conf_thresh=confidence_threshold, margin_frac=margin_frac
+        recon, conf_thresh=confidence_threshold, margin_frac=margin_frac, analyse = analyse,
+        resolution=resolution,
     )
 
     canvas, subject_positions = composite_overlay(
