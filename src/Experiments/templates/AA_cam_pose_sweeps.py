@@ -20,22 +20,22 @@ from A_Config import (
     set_case, case_dir, cut3r_output_dir, vggt_o_output_dir, predictions_path,
     lingbot_map_dir, frames_for_cam_poses_dir, FRAME_NAME_FMT,
 )
-from B_video_processing import image_sequencer, video_fps, available_frames
+from Two2D.B_video_processing import image_sequencer, video_fps, available_frames
 from run_models.E_cut3r_recon import run_cut3r
 from run_models.E_VGGT_omega import run_vggt_omega
 from run_models.E_megasam_recon import run_megasam
 from run_models.B_lingbot_map import run_lingbot_map
-from F_post_recon_processing import (
+from Thr3D.F_post_recon_processing import (
     Reconstruction, load_cut3r_trace_v2, load_megasam_trace, load_VGGT_trace,
     load_lingbot_map_trace,
 )
-from F_transpose_to_recon_objects import (
+from Thr3D.F_transpose_to_recon_objects import (
     cut3r_to_reconstruction, megasam_to_reconstruction, lingbot_map_to_reconstruction,
     vggt_plain_to_reconstruction,
 )
 from P_projection_mapping import BEV_tile_render_PM
 from Q_Metric_georeferencing import GPS_camerapose_matcher
-from G_transforms_alignments import umeyama_align
+from Thr3D.G_transforms_alignments import umeyama_align
 
 
 #------------------------------------------------------------------

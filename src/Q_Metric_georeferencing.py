@@ -11,10 +11,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from Q_GPS_processing import csv_to_GPS_dict, android_movie_GPS
-from F_post_recon_processing import build_frame_index, load_reality_scan_trace
+from Thr3D.F_post_recon_processing import build_frame_index, load_reality_scan_trace
 from C_CSV_report import add_to_report
 from A_Config import assets_dir, asset_name, report_path, to_report_path
-from G_transforms_alignments import umeyama_align, ortho_charts , transform_RST   , umeyama_align_anchor
+from Thr3D.G_transforms_alignments import umeyama_align, ortho_charts , transform_RST   , umeyama_align_anchor
 
 #real-world lat long into metres, relative to the first item as origin (0,0,0).
 #x ~ east-west, z ~ north-south, y ~ up (0 for every row if heights isn't given,

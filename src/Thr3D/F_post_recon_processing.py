@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import torch
 import torch.nn.functional as F
-from G_transforms_alignments import _rc_rotation_matrix, apply_cam0_frame, unproject, ortho_charts
+from Thr3D.G_transforms_alignments import _rc_rotation_matrix, apply_cam0_frame, unproject, ortho_charts
 from A_Config import FRAME_NAME_FMT, frames_for_recon_dir
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -254,7 +254,7 @@ class Reconstruction:
         poses[:, 3, 3] = 1
         return {frame: poses[row] for frame, row in self.frame_to_row.items()}
 
-    def VGGT_O_preds_to_ply_export(self, out_dir=None, conf_threshold=1.5,R = None, t=None, s=None, multi=False, centre_to_cam00 = None):
+    def VGGT_O_preds_to_ply_export(self, out_dir=None, R = None, t=None, s=None, multi=False, centre_to_cam00 = None):
         """
         Option 1:
         Write one coloured .ply per frame, in cam0's frame  (x right, y up, z forward) 
@@ -295,23 +295,23 @@ class Reconstruction:
                 points = points * s 
 
             colors = image.permute(1, 2, 0).reshape(-1, 3).cpu().numpy()
-            valid  = (conf > conf_threshold).cpu().numpy()
+            confidence = conf.cpu().numpy()
 
-            points = points[valid]
             points[:, 1:] *= -1  # match CUT3R's y-up/z-forward axis convention
-            _write_ply(out_dir / f"{frame_idx:06d}.ply", points, colors[valid])
+            _write_ply(out_dir / f"{frame_idx:06d}.ply", points, colors, confidence)
         return centre_to_cam00
 
 
 
 
-def _write_ply(path, points, colors):
-    """Binary little-endian PLY -- same byte layout as D_cut3r_recon.py's
-    writer, so files from both sources load through D_cut3r_vis.py unchanged.
-    points: (N,3) float. colors: (N,3) float in [0,1].
+def _write_ply(path, points, colors, confidence):
+    """Binary little-endian PLY -- same byte layout as E_cut3r_recon.py's
+    writer, so files from both sources load through F_cut3r_vis.py unchanged.
+    points: (N,3) float. colors: (N,3) float in [0,1]. confidence: (N,) float.
     """
-    pts = np.asarray(points, dtype=np.float32)
-    rgb = (np.asarray(colors) * 255).clip(0, 255).astype(np.uint8)
+    pts  = np.asarray(points, dtype=np.float32)
+    rgb  = (np.asarray(colors) * 255).clip(0, 255).astype(np.uint8)
+    conf = np.asarray(confidence, dtype=np.float32)
     n = len(pts)
 
     header = (
@@ -319,14 +319,17 @@ def _write_ply(path, points, colors):
         f"element vertex {n}\n"
         f"property float x\nproperty float y\nproperty float z\n"
         f"property uchar red\nproperty uchar green\nproperty uchar blue\n"
+        f"property float confidence\n"
         f"end_header\n"
     ).encode("ascii")
 
     dt = np.dtype([("x", "<f4"), ("y", "<f4"), ("z", "<f4"),
-                   ("red", "u1"), ("green", "u1"), ("blue", "u1")])
+                   ("red", "u1"), ("green", "u1"), ("blue", "u1"),
+                   ("confidence", "<f4")])
     verts = np.empty(n, dtype=dt)
     verts["x"], verts["y"], verts["z"] = pts[:, 0], pts[:, 1], pts[:, 2]
     verts["red"], verts["green"], verts["blue"] = rgb[:, 0], rgb[:, 1], rgb[:, 2]
+    verts["confidence"] = conf
 
     with open(path, "wb") as f:
         f.write(header)
@@ -336,7 +339,7 @@ def _write_ply(path, points, colors):
 
 #-------frame indexing ----vggt only at the moment
 from pathlib import Path
-from B_video_processing import available_frames
+from Two2D.B_video_processing import available_frames
 def build_frame_index(frames_dir, name_fmt, frame_range=None):
     """Maps absolute source frame number -> row index into preds arrays, assuming
     predictions.npz was generated from these exact files in sorted-by-frame-number

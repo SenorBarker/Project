@@ -3,7 +3,7 @@
 
 from A_Config import set_case, assets_dir, report_path, asset_name
 #turn a video into a text description
-from A_gemini import gemini_cache_video
+from Two2D.A_gemini import gemini_cache_video
 with open(report_path()) as f:
         csv_text = f.read()
 video_path = assets_dir() / f"{asset_name()}_overlay_video.mp4"
@@ -32,7 +32,7 @@ def gemini_final_report():
             f"**MM:SS** [Speaker]: transcript\n\n"
             f" if the same person is talking and there is less than 2s pause, this is one entry not 2"     
         )
-    from A_gemini import gemini_query_CSV_cached
+    from Two2D.A_gemini import gemini_query_CSV_cached
     event_description = gemini_query_CSV_cached(event_descrption_prompt, asset_name, report_path(), assets_dir())
     transcript =  gemini_query_CSV_cached(transcript_prompt, asset_name, report_path(), assets_dir())
 

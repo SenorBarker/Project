@@ -15,7 +15,7 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
     caches.get); otherwise uploads the video and creates a fresh cache."""
     client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
 
-    cache_name_path = query_dir / f"{case_name}_cache_name.txt"
+    cache_name_path = query_dir / f"{case_name}_cache.txt"
     cache_name = None
     if cache_name_path.exists():
         try:

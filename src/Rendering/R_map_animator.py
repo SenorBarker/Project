@@ -29,7 +29,7 @@ import json
 
 from C_CSV_report import add_to_report
 from A_Config import report_path, asset_name, assets_dir, case_dir, to_report_path
-from B_video_processing import video_fps
+from Two2D.B_video_processing import video_fps
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

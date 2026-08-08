@@ -30,8 +30,28 @@ def frames_present(masks_path):
         return frames_list, None
     #total time subject was featured (ignoring gaps)
     subject_duration = np.max(frames_list)- np.min(frames_list)
-    
+
     return frames_list, subject_duration
+
+
+def list_track_id_dirs(beat_mask_dir):
+    '''Every candidate track_id subfolder under a beat's mask directory
+    (see A_ROBOFLOW_SAM3.py's layout, sam3_masks_dir()/<beat_id>/
+    <subject>-<track_id>/). [] if the directory doesn't exist or holds none
+    (both mean "no candidates", not an error).
+
+    No filtering here -- for now every candidate is used as-is (see
+    assemble_paper_edit). FUTURE: this is also what will enumerate the
+    candidates analysis_2d_from_masks reports per beat; the Producer's
+    revision pass will review that per-candidate breakdown and write back
+    which track_id folder names it actually wants for the beat, and
+    assemble_paper_edit will resolve just those named folders instead of
+    taking this function's full list -- that selection field doesn't exist
+    in the schema yet, so it isn't wired up here.'''
+    beat_mask_dir = Path(beat_mask_dir)
+    if not beat_mask_dir.is_dir():
+        return []
+    return sorted(p for p in beat_mask_dir.iterdir() if p.is_dir())
 
 
 '''HELPERS THAT COULD BE ELSEWHERE'''
@@ -178,9 +198,14 @@ def mask_analysis(masks_dir, report_prefix=None):
 def analysis_2d_from_masks(paper_edit_json_path):
     '''The "dict maker" -- knows which beats to check. Walks every beat with
     tracked_subject set and rebuilds analysis_2d_for_decisions (keyed by
-    beat "order", same shape A_ROBOFLOW_SAM3.track_subject_sam3 returns) from
-    the per-beat masks already on disk at sam3_masks_dir()/beat{order:02d}/
-    -- no SAM3 API call, just re-reading files that are already there.'''
+    beat_id -- specifically beat["beat_id"][0], matching the plain-string
+    keys A_ROBOFLOW_SAM3._run_sam3_tracking's return dict uses; see that
+    module for why beat_id, not order) from the per-beat masks already on
+    disk at sam3_masks_dir()/<beat_id>/<subject>-<track_id>/ -- no SAM3 API
+    call, just re-reading files that are already there. Unions masks across
+    every beat_id in the beat's beat_id list (more than one after a
+    revision-pass merge), and every candidate track_id folder counts
+    (list_track_id_dirs, no curation yet), same as the write side.'''
     from A_Config import sam3_masks_dir
 
     data = json.loads(Path(paper_edit_json_path).read_text(encoding="utf-8"))
@@ -188,8 +213,37 @@ def analysis_2d_from_masks(paper_edit_json_path):
     for beat in data["beats"]:
         if not beat.get("tracked_subject"):
             continue
-        order = beat["order"]
-        masks_dir = sam3_masks_dir() / f"beat{order:02d}"
-        analysis_2d_for_decisions[order] = mask_analysis(masks_dir, report_prefix=f"beat{order:02d}")
+        beat_key = beat["beat_id"][0]
+        track_dirs = [d for bid in beat["beat_id"] for d in list_track_id_dirs(sam3_masks_dir() / bid)]
+        frames_list = sorted({f for d in track_dirs for f in frames_present(d)[0]})
+
+        if not frames_list:
+            print(f"no masks for {beat_key}")
+            analysis_2d_for_decisions[beat_key] = {
+                "Subject_frames_present": [],
+                "subject_first_frame": None,
+                "subject_last_frame": None,
+                "subject_duration_frames": None,
+                "continuous frame sequences": [],
+                "best_seq_idx": None,
+                "masks_dir": str(sam3_masks_dir() / beat_key),
+            }
+            continue
+
+        seqs, best_idx = contiguous_durations(frames_list, tolerance=15)
+        entry = {
+            "Subject_frames_present": frames_list,
+            "subject_first_frame": min(frames_list),
+            "subject_last_frame": max(frames_list),
+            "subject_duration_frames": max(frames_list) - min(frames_list),
+            "continuous frame sequences": seqs,
+            "best_seq_idx": best_idx,
+            "masks_dir": str(sam3_masks_dir() / beat_key),
+        }
+        analysis_2d_for_decisions[beat_key] = entry
+        add_to_report({
+            f"{beat_key}_subject_first_frame": entry["subject_first_frame"],
+            f"{beat_key}_subject_last_frame": entry["subject_last_frame"],
+        })
 
     return analysis_2d_for_decisions

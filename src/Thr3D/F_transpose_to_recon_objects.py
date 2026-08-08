@@ -14,7 +14,7 @@ import numpy as np
 import torch
 
 from A_Config import FRAME_NAME_FMT
-from F_post_recon_processing import Reconstruction, build_frame_index, DEVICE
+from Thr3D.F_post_recon_processing import Reconstruction, build_frame_index, DEVICE
 
 
 def _as_hw(arr):

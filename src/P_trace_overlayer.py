@@ -24,7 +24,25 @@ import torch
 from A_Config import assets_dir, asset_name, to_report_path
 from C_CSV_report import add_to_report
 from P_projection_mapping import reproject, DEVICE
-from R_map_animator import interp_pos, hex_to_rgb
+from Rendering.R_map_animator import interp_pos, hex_to_rgb
+
+
+def _time_smoothed(frames, positions, fps, window_sec):
+    """Centered running average of positions over a window_sec-wide real-time
+    window, using each frame's own frame_number/fps timestamp rather than a
+    fixed sample count -- stays correct across irregular gaps (missing/
+    redacted frames don't skew the window width the way a fixed N-sample
+    window would). window_sec<=0 returns positions unchanged."""
+    if window_sec <= 0:
+        return positions
+    t = np.asarray(frames, dtype=float) / fps
+    positions = np.asarray(positions, dtype=float)
+    half = window_sec / 2
+    out = np.empty_like(positions)
+    for i in range(len(t)):
+        in_window = np.abs(t - t[i]) <= half
+        out[i] = positions[in_window].mean(axis=0)
+    return out
 
 
 def BEV_trace_overlay(
@@ -37,9 +55,19 @@ def BEV_trace_overlay(
     trail_width=None, trail_opacity=0.85, dot_radius=None, dot_opacity=1.0,
     frustum_length=None, frustum_half_angle_deg=22.0,
     supersample=2,
+    fps=25, smooth_window_sec=1.0,
 ):
     """n_frames is the only thing controlling frame count -- unlike R_map_animator,
-    it is never derived from duration*fps."""
+    it is never derived from duration*fps.
+
+    smooth_window_sec: subject_positions is smoothed with a centered running
+    average over this many seconds of real video time (using each frame's own
+    frame_number/fps timestamp, not a fixed sample count) before being
+    reprojected -- 1.0s is walking pace, tight enough to preserve real motion
+    but wide enough to average out per-frame mask/depth noise (confirmed
+    against real data: a 1s/~8-sample window rides through the noise without
+    smearing genuine trajectory shape -- see the confidence-floor/junk-mask
+    investigation). Set to 0 to disable and use raw positions."""
     from PIL import Image, ImageDraw
 
     if bev_png_path is None:
@@ -88,18 +116,25 @@ def BEV_trace_overlay(
 
     traces = [{
         "frames": cam_frames, "px_points": cam_pts, "heading_pts": cam_heading_pts,
-        "trail_color": camera_trail_color,
+        "trail_color": camera_trail_color, "label": "camera",
     }]
 
     if subject_positions is not None:
         sub_frames = sorted(fn for fn in extra_indices if fn in subject_positions)
+        # drop NaN/inf positions here -- reproject()/interp_pos() have no NaN guard,
+        # so a bad point silently spreads into every frame whose t_frac interpolates
+        # across it (see P_trace_overlayer teleport investigation)
+        sub_frames = [fn for fn in sub_frames if np.isfinite(np.asarray(subject_positions[fn])).all()]
         if len(sub_frames) >= 2:
-            sub_pos = torch.stack([subject_positions[fn] for fn in sub_frames])
+            sub_pos_raw = np.stack([subject_positions[fn] for fn in sub_frames])
+            sub_pos_smoothed = _time_smoothed(sub_frames, sub_pos_raw, fps, smooth_window_sec)
+            sub_pos = torch.as_tensor(sub_pos_smoothed, dtype=torch.float32, device=DEVICE)
+
             us, vs, _, _ = reproject(sub_pos, None, new_view, ortho_params=ortho_params)
             sub_pts = [(x * render_scale, y * render_scale) for x, y in zip(us.cpu().tolist(), vs.cpu().tolist())]
             traces.append({
                 "frames": sub_frames, "px_points": sub_pts, "heading_pts": None,
-                "trail_color": subject_trail_color,
+                "trail_color": subject_trail_color, "label": "subject",
             })
         else:
             print(f"Skipping subject trace -- only {len(sub_frames)} frame(s) overlap extra_indices.")
@@ -171,6 +206,9 @@ def BEV_trace_overlay(
 
             dx0, dy0 = interp_pos(t_frac, tr["time_fracs"], tr["interp_pts"])
             dx, dy = dx0 * S, dy0 * S
+            virtual_frame = t0_global + t_frac * (t1_global - t0_global)
+            print(f"frame {fi:04d} t_frac={t_frac:.4f} [{tr['label']}] "
+                  f"virtual_frame={virtual_frame:.1f} pos_px=({dx0:.1f}, {dy0:.1f})")
             draw.ellipse([dx - dr, dy - dr, dx + dr, dy + dr], fill=(*rgb, d_alpha))
 
             if tr["heading_pts"] is not None:

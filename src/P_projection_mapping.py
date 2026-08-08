@@ -22,7 +22,7 @@ import torch.nn.functional as F
 import math
 
 from A_Config import case_dir, assets_dir, asset_name, report_path, to_report_path
-from G_transforms_alignments import transform_RST, unproject
+from Thr3D.G_transforms_alignments import transform_RST, unproject
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -261,16 +261,11 @@ def crop_to_mask_region(mask, extra_rgb, depth_low, conf_low, lowres_rgb, intrin
 
 def unproject_masked(mask, rgb_full, depth_low, conf_low, lowres_rgb, intrinsic_full, extrinsic, margin=8, conf_thresh=5):
     """Unproject the pixels covered by `mask` to VGGT-O world-space points.
-
-    mask, rgb_full: full-resolution, matching the source frame.
-    depth_low, conf_low: this camera's native-resolution row from preds["depth"]/preds["depth_conf"].
-    lowres_rgb: this camera's native-resolution row from preds["images"] (HWC) -- the
-    model's own colour input, used as joint_bilateral_upsample's per-sample anchor colour.
-    intrinsic_full: this camera's intrinsic already scaled to rgb_full's resolution (see get_full_res_camera).
-    extrinsic: this camera's extrinsic, unscaled -- straight from preds["extrinsic"].
+    Up-reses the depth to fit the mask using jonit bilateral upsample
 
     Returns (world_points, rgb) for just the masked pixels, or (None, None) if the mask
-    is empty. World points are in the one VGGT-O world frame regardless of resolution --
+    is empty. 
+    World points are in the original  VGGT-O model frame and scale regardless of resolution --
     see unproject().
     """
     if mask is None or mask.sum() == 0:
@@ -682,12 +677,14 @@ def _ortho_view_from_recon(recon, conf_thresh=5,
         # native_scale is density-derived and can blow up on dense/degenerate point
         # clouds -- hardcode scale instead of computing it until that's made safe.
         scale = 6000
+        print("scale - original" , scale)
+
     else:
         fit_scale = min(width / x_range, height / y_range)
         avg_spacing = (x_range * y_range / n_points) ** 0.5
         native_scale = 1.0 / avg_spacing
         scale = max(fit_scale, native_scale)
-    print("scale - original" , scale)
+        print("scale - original" , scale)
     out_width = max(width, round(x_range * scale))
     out_height = max(height, round(y_range * scale))
     cx, cy = out_width / 2, out_height / 2
@@ -739,7 +736,7 @@ def BEV_tile_render_PM(recon, extra_indices, masks_dir=None, splat_radius=1,
 
     img = (canvas.clamp(0, 1) * 255).byte().cpu().numpy()
     if out_path is None:
-        outpath = assets_dir() / f"{asset_name()}_BEV_tile_render_PM.png"
+        outpath = assets_dir() / f"{asset_name()}_BEV_PM_{resolution}_{confidence_threshold}.png"
     else:
         outpath = Path(out_path)
         outpath.parent.mkdir(parents=True, exist_ok=True)
@@ -747,7 +744,7 @@ def BEV_tile_render_PM(recon, extra_indices, masks_dir=None, splat_radius=1,
 
     if out_path is None:
         add_to_report({"BEV_tile_render_PM": to_report_path(outpath)})
-    return subject_positions, new_view, ortho_params
+    return subject_positions, new_view, ortho_params, outpath
 
 
 import subprocess

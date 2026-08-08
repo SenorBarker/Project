@@ -51,7 +51,7 @@ def frames_to_time(frames, fps, timecode=pd.Timedelta(0)):
         return _fmt(times)
     return [_fmt(t) for t in times]#apply format to all the times
 
-from B_video_processing import video_start_time
+from Two2D.B_video_processing import video_start_time
 def attach_times_of_day(video_path, fps):
     '''For every "key" already in the current case's report CSV (see
     A_Config.set_case) ending in "_frame", append a matching "<key>_time"

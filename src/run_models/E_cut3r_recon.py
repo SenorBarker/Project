@@ -23,29 +23,34 @@ def _make_raymap(c2w, h, w, intrinsics):
     return np.concatenate([ro, rd], axis=-1).astype(np.float32)  # H×W×6
 
 
-def _save_ply(path, pts3d_world, colors):
-    """Save a coloured point cloud as a binary PLY file.
+def _save_ply(path, pts3d_world, colors, confidence):
+    """Save a coloured, per-vertex-confidence point cloud as a binary PLY file.
 
     pts3d_world : (H, W, 3) float32 — points in world space
     colors      : (H, W, 3) float32 — RGB in [0, 1]
+    confidence  : (H, W)    float32 — CUT3R's per-pixel confidence
     """
-    pts = pts3d_world.reshape(-1, 3).astype(np.float32)
-    rgb = (colors.reshape(-1, 3) * 255).clip(0, 255).astype(np.uint8)
-    n   = len(pts)
+    pts  = pts3d_world.reshape(-1, 3).astype(np.float32)
+    rgb  = (colors.reshape(-1, 3) * 255).clip(0, 255).astype(np.uint8)
+    conf = confidence.reshape(-1).astype(np.float32)
+    n    = len(pts)
 
     header = (
         f"ply\nformat binary_little_endian 1.0\n"
         f"element vertex {n}\n"
         f"property float x\nproperty float y\nproperty float z\n"
         f"property uchar red\nproperty uchar green\nproperty uchar blue\n"
+        f"property float confidence\n"
         f"end_header\n"
     ).encode("ascii")
 
     dt = np.dtype([("x", "<f4"), ("y", "<f4"), ("z", "<f4"),
-                   ("red", "u1"), ("green", "u1"), ("blue", "u1")])
+                   ("red", "u1"), ("green", "u1"), ("blue", "u1"),
+                   ("confidence", "<f4")])
     verts = np.empty(n, dtype=dt)
     verts["x"], verts["y"], verts["z"] = pts[:, 0], pts[:, 1], pts[:, 2]
     verts["red"], verts["green"], verts["blue"] = rgb[:, 0], rgb[:, 1], rgb[:, 2]
+    verts["confidence"] = conf
 
     with open(path, "wb") as f:
         f.write(header)
@@ -53,17 +58,16 @@ def _save_ply(path, pts3d_world, colors):
 
 
 def _export_outputs(output_dir, f_id, depth, conf, color, c2w, intrin,
-                    pts3d_world, R_norm, t_norm, nvs_rgb=None, conf_threshold=1.5):
+                    pts3d_world, R_norm, t_norm, nvs_rgb=None):
     np.save(output_dir / "depth"  / f"{f_id:06d}.npy", depth)
     np.save(output_dir / "conf"   / f"{f_id:06d}.npy", conf)
     iio.imwrite(str(output_dir / "color" / f"{f_id:06d}.png"),
                 (color * 255).astype(np.uint8))
     np.savez(str(output_dir / "camera" / f"{f_id:06d}.npz"),
              pose=c2w, intrinsics=intrin)
-    mask    = conf.reshape(-1) > conf_threshold
-    pts_out = (pts3d_world @ R_norm.T + t_norm).reshape(-1, 3)[mask]
-    col_out = color.reshape(-1, 3)[mask]
-    _save_ply(output_dir / "ply" / f"{f_id:06d}.ply", pts_out, col_out)
+    pts_out = (pts3d_world @ R_norm.T + t_norm).reshape(-1, 3)
+    col_out = color.reshape(-1, 3)
+    _save_ply(output_dir / "ply" / f"{f_id:06d}.ply", pts_out, col_out, conf)
     if nvs_rgb is not None:
         iio.imwrite(str(output_dir / "nvs_rgb" / f"{f_id:06d}.png"),
                     (nvs_rgb * 255).astype(np.uint8))
@@ -83,8 +87,7 @@ def _third_person_c2w(c2w, back_dist, up_dist):
 
 
 def run_cut3r(frames_dir, output_dir, ckpt_path, size=512, device="cuda",
-              render_3rdperson=False, back_dist=0.5, up_dist=0.3, revisit=False,
-              conf_threshold=1.5):
+              render_3rdperson=False, back_dist=0.5, up_dist=0.3, revisit=False):
     """
     Streaming CUT3R inference on an image sequence.
 
@@ -233,8 +236,7 @@ def run_cut3r(frames_dir, output_dir, ckpt_path, size=512, device="cuda",
                 # so f_id alone would silently discard the true frame identity.
                 frame_num = int(Path(img_paths[f_id]).stem)
                 _export_outputs(output_dir, frame_num, depth, conf, color,
-                                c2w, intrin, pts3d_world, R_norm, t_norm, nvs_rgb,
-                                conf_threshold)
+                                c2w, intrin, pts3d_world, R_norm, t_norm, nvs_rgb)
 
     if revisit:
         print("Pass 2 (revisiting): re-processing all frames with frozen final state...")
@@ -321,8 +323,7 @@ def run_cut3r(frames_dir, output_dir, ckpt_path, size=512, device="cuda",
                 # number (img_path is already the true source path here), not f_id.
                 frame_num = int(Path(img_path).stem)
                 _export_outputs(output_dir, frame_num, depth, conf, color,
-                                c2w, intrin, pts3d_world, R_norm, t_norm, nvs_rgb,
-                                conf_threshold)
+                                c2w, intrin, pts3d_world, R_norm, t_norm, nvs_rgb)
 
         elapsed2 = time.time() - t1
         print(f"Revisit pass done. {len(img_paths)} frames in {elapsed2 / 60:.1f} min  "
