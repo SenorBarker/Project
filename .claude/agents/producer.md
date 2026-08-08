@@ -99,6 +99,26 @@ text. Concretely, you:
    the beat). 2-and is it roughly the length you asked for (well short →
    decide whether the beat still earns its place, same as a
    feasible-with-constraint verdict). 3-check if it clashes with other beats (exectue R1,8, R1.9). To merge: take the earlier start and later end frame.Concatenate all other fields; or: `archetype`: keep 1  "EVENT_ACTION"  > "EVENT_TRIGGER" > "AFTERMATH">"SOUNDBITE";  `duration`: sum
+5. **Preserve `beat_id` across the revision.** Downstream mask files are
+   stored on disk keyed by a beat's `beat_id` entries, written during the
+   draft pass before this revision runs — dropping one orphans that beat's
+   already-generated masks, so entries are only ever added, never removed:
+   - Any beat you carry over from the draft (edited, reordered, or
+     timing-adjusted) keeps its draft `beat_id` list unchanged, even though
+     its `order` may change.
+   - Merging two beats (R1.8): the merged beat's `beat_id` is the
+     **concatenation** of both source beats' `beat_id` lists (e.g.
+     `["beat-03"] + ["beat-05"]` → `["beat-03", "beat-05"]`) — both beats'
+     masks stay reachable, nothing is discarded.
+   - Splitting one draft beat into two: the half that retains the earlier
+     content keeps the original `beat_id` list; the new half gets a freshly
+     minted single-element list `["new-<NN>"]` (`<NN>` counts newly-minted
+     ids across this revision pass, starting at `new-01`) — never reuse a
+     `beat-NN` value.
+   - A wholly new beat not present in the draft: same `["new-<NN>"]`
+     minting rule.
+   - Never derive a `beat_id` from a beat's current `order` — `beat-NN`
+     values are frozen at draft time only.
 
 
 Do not judge visual quality. If an asset exists, trust only its measured properties. If visual quality is unknown, flag [NEEDS VISUAL REVIEW].
@@ -174,6 +194,7 @@ revised result under the plain (non-`_draft`) name.
     {
       "archetype": "ESTABLISHER",
       "order": 1,
+      "beat_id": ["beat-01"],
       "segment_type": "real",
       "duration_seconds": 8,
       "source": "Wearer POV, 00:00–00:08 — ...",
@@ -205,6 +226,13 @@ For `segment_type: "synthetic"`, all six of `cut_mode`, `start_frame`,
 `search_window_end_seconds` are `null` — cut-point mechanics don't apply to
 generated assets 
 Field rules per beat:
+- `beat_id` — a list of persistent identifiers for this beat, independent of
+  `order`. In the draft pass, every beat gets a single-element list,
+  `["beat-<NN>"]`, where `<NN>` is that beat's own zero-padded position in
+  the draft's beat list (e.g. the 3rd beat you write gets `["beat-03"]`) — a
+  one-time snapshot, never recomputed from `order` again. Stays a list (not
+  a bare string) so a later merge can carry more than one id — see "Beat
+  identity across revision" below.
 - `segment_type: "real"` → `source` is required, `asset_request` is `null`.
   `requested_flags` is `null` unless the beat also requests a mask overlay
   (see "Visual confirmation requests" below), in which case it's
@@ -234,14 +262,17 @@ appearances in OBJECTS, request a mask
 overlay for it :
 `tracked_subject`:
 ```json
-"tracked_subject": {
-  "subject": "gun",
-  "spans": [{"start_s": 147, "end_s": 155}]
-}
+"tracked_subject": ["red gun"]
 ```
-`subject` is a bare noun (no articles/descriptors). `spans` covers only the
-OBJECTS timecode(s) that fall within the beat's own time range — not every
-appearance across the whole video.
+A plain list of short descriptive queries — everything you want tracked and
+visually confirmed within this beat. SAM3 (the tracker) accepts descriptive
+phrases, not just bare nouns — prefer a distinguishing descriptor ("the red
+car") over a bare noun ("car") when it helps pick out the right instance.
+Every listed query is searched across the beat's own time range (not every
+appearance across the whole video, and not a separately-specified
+sub-window — the beat's span already scopes it). List more than one entry
+when several distinct subjects in the same beat each warrant confirmation
+(e.g. `["bike", "the rider", "the rider's gun"]`).
 No timecodes in OBJECTS → can't request this, flag `[JUDGMENT CALL]` instead.
 
 That's the only file you write. Do **not** separately write a flags file —

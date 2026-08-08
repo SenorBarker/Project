@@ -61,7 +61,7 @@ def _beat_block(beat):
     ]
     if beat.get("source"):
         lines.append(f'<div class="field"><span class="label">Source:</span> {_esc(beat["source"])}</div>')
-    if beat.get("cut_mode") == "fixed_frames":
+    if beat.get("cut_mode") == "fixed_frames" or beat.get("auto_select_resolved"):
         frame_range = f'{beat.get("start_frame")}–{beat.get("end_frame")}'
         lead_in = beat.get("lead_in_seconds")
         lead_in_txt = f' | lead_in_seconds: {lead_in}' if lead_in else ""
@@ -151,22 +151,41 @@ def derive_and_save_flags(paper_edit_json_path: str | Path, available_flag_keys)
     return flags_path
 
 
-def build_tracking_detections(paper_edit_json_path: str | Path) -> list[dict]:
-    """Collects every beat's tracked_subject.spans into a detections-shaped
-    list[{"subject","start_s","end_s"}] for A_YOLO_seg.track_subject_masks_from_hints
-    or A_ROBOFLOW_SAM3.track_subject_sam3, flattening multiple spans per
-    subject into separate dicts (each tracker expects one dict per span)."""
+def build_tracking_requests(paper_edit_json_path: str | Path, fps: float) -> list[dict]:
+    """Collects every beat's tracked_subject list into a tracking-*request*-
+    shaped list[{"beat_id","subject","start_s","end_s"}] for
+    A_YOLO_seg.track_subject_masks_from_hints or
+    A_ROBOFLOW_SAM3.track_subject_sam3 -- one dict per requested subject.
+    Deliberately not called "detections": these are queries asking a
+    tracker to go find something, not results a tracker already found (see
+    e.g. A_ROBOFLOW_SAM3's `dets`/`raw_detection_rows`, which are the actual
+    detections this feeds into). Each subject in a beat's tracked_subject
+    list shares that beat's own time range (no per-subject sub-spans).
+    Beats reach this function in draft form (before find_all_cut_points
+    resolves cut points), so fixed_frames beats convert start_frame/
+    end_frame via fps and auto_select beats fall back to their (still
+    coarse) search window. beat_id is drawn from beat["beat_id"][0] -- at
+    draft time this list is always single-element; multi-element beat_id
+    lists only appear later, after a revision-pass merge, and are a
+    read-time (not write-time) concern."""
     data = json.loads(Path(paper_edit_json_path).read_text(encoding="utf-8"))
-    detections = []
+    requests = []
     for beat in data["beats"]:
         tracked = beat.get("tracked_subject")
         if not tracked:
             continue
-        for span in tracked["spans"]:
-            detections.append({
-                "order": beat["order"],
-                "subject": tracked["subject"],
-                "start_s": span["start_s"],
-                "end_s": span["end_s"],
+        if beat.get("cut_mode") == "fixed_frames":
+            start_s = beat["start_frame"] / fps
+            end_s = beat["end_frame"] / fps
+        else:
+            start_s = beat["search_window_start_seconds"]
+            end_s = beat["search_window_end_seconds"]
+        beat_id = beat["beat_id"][0]
+        for subject in tracked:
+            requests.append({
+                "beat_id": beat_id,
+                "subject": subject,
+                "start_s": start_s,
+                "end_s": end_s,
             })
-    return detections
+    return requests

@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import cv2
@@ -11,7 +12,8 @@ import numpy as np
 
 from C_CSV_report import add_to_report
 from A_Config import assets_dir, asset_name, case_dir, report_path, to_report_path, sam3_masks_dir
-from B_video_processing import video_fps
+from Two2D.B_video_processing import video_fps
+from D_2d_analysis import list_track_id_dirs
 
 MASK_NAME_FMT = "{:04d}.png"
 
@@ -65,11 +67,121 @@ def apply_mask_overlay(frame_bgr, mask_bool, color=(0, 200, 0), alpha=0.4):
     return out
 
 
+def video_overlay_edit(
+        video_path,
+        start,
+        end,
+        masks_dir,
+        mask_start,
+        mask_end,
+        handles=1,
+        color=(0, 200, 0),
+        alpha=0.4,
+        name=None):
+    '''Restored from before the mask_compositor rename (commit 4772b19),
+    which dropped this in favor of a PNG-sequence-only output -- kept
+    alongside mask_compositor since they serve different purposes: this one
+    is a compressed, shareable/reviewable mp4 with real audio, quick to open
+    and skim, vs. mask_compositor's raw frame dump. Like video_edit, but
+    burns a mask-highlight overlay onto any frame in [start, end] (frame
+    numbers, the video range) that both has a matching MASK_NAME_FMT-named
+    PNG in masks_dir AND falls within [mask_start, mask_end]. masks_dir may
+    hold masks for a wider range than wanted here (e.g. other detections in
+    the same sequence) -- mask_start/mask_end scope which of those files
+    actually get used, independent of the video's start/end. Frames with no
+    mask, or outside [mask_start, mask_end], pass through unchanged.
+    masks_dir is taken as-is -- caller resolves which folder to point at,
+    same as mask_compositor/_mask_overlay_mezzanine_clip.
+
+    cv2 can't touch audio, so this is done in two passes: frames are written
+    to a silent temp video, then muxed with the original video's audio
+    (re-clipped to the same range and re-encoded to AAC, same as video_edit)
+    in one final ffmpeg pass. Also writes a thumbnail and appends both to
+    the report CSV.
+
+    name distinguishes the output filename (defaults to asset_name(), the
+    original single-output behavior) -- pass a distinct name per call (e.g.
+    a track_id) so repeated calls against different masks_dir don't
+    overwrite each other's output.'''
+    name = name or asset_name()
+    fps = video_fps(video_path)
+    start_s = max(0.0, start / fps - handles)
+    end_s   = end / fps + handles
+
+    handles_frames = round(handles * fps)
+    start_frame = max(0, start - handles_frames)
+    end_frame   = end + handles_frames  # inclusive
+
+    cap = cv2.VideoCapture(str(video_path))
+    fw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    fh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    tmp_silent = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+    tmp_silent.close()
+    tmp_silent_path = tmp_silent.name
+
+    try:
+        writer = cv2.VideoWriter(tmp_silent_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (fw, fh))
+
+        frame_idx = 0
+        written = 0
+        first_frame = None
+        while frame_idx <= end_frame:
+            ret, frame = cap.read()
+            if not ret:
+                if frame_idx < start_frame:
+                    cap.release()
+                    writer.release()
+                    raise ValueError(
+                        f"{video_path} ended at frame {frame_idx}, before requested start {start_frame}."
+                    )
+                print(f"Warning: video ended at frame {frame_idx}, before requested end {end_frame} "
+                      f"-- output will be shorter than requested.")
+                break
+            #frames sent to have mask overlay here
+            if frame_idx >= start_frame:
+                mask = None
+                if mask_start <= frame_idx <= mask_end:
+                    mask = _load_mask_bool(masks_dir, frame_idx)
+                if mask is not None:
+                    frame = apply_mask_overlay(frame, mask, color=color, alpha=alpha)
+                if first_frame is None:
+                    first_frame = frame.copy()
+                writer.write(frame)
+                written += 1
+            frame_idx += 1
+
+        cap.release()
+        writer.release()
+
+        if written == 0:
+            raise ValueError(f"No frames written for [{start_frame}, {end_frame}] in {video_path}.")
+        outpath = assets_dir() / f"{name}_overlay_video.mp4"
+        outname = f"{name}_overlay_video.mp4"
+        subprocess.run(
+            ["ffmpeg", "-y",
+             "-i", tmp_silent_path,
+             "-ss", f"{start_s:.3f}", "-to", f"{end_s:.3f}", "-i", str(video_path),
+             "-map", "0:v:0", "-map", "1:a:0",
+             "-c:v", "libx264", "-c:a", "aac", str(outpath)],
+            check=True,
+        )
+
+        thumb_path = assets_dir() / f"{name}_overlay_thumb.png"
+        thumb_name = f"{name}_overlay_thumb.png"
+        cv2.imwrite(str(thumb_path), first_frame)
+    finally:
+        os.remove(tmp_silent_path)
+
+    add_to_report({"overlay_mp4": outname, "overlay_mp4_thumb": thumb_name})
+    return outpath
+
+
 def mask_compositor(
         video_path,
         start,
         end,
-        tracker,
+        masks_dir,
         mask_start,
         mask_end,
         handles=1,
@@ -77,18 +189,19 @@ def mask_compositor(
         alpha=0.4):
     '''Burns a mask-highlight overlay onto any frame in [start, end] (frame
     numbers, the video range) that both has a matching MASK_NAME_FMT-named
-    PNG in mask_dir AND falls within [mask_start, mask_end]. mask_dir may
+    PNG in masks_dir AND falls within [mask_start, mask_end]. masks_dir may
     hold masks for a wider range than wanted here (e.g. other detections in
     the same sequence) -- mask_start/mask_end scope which of those files
     actually get used, independent of the video's start/end. Frames with no
     mask, or outside [mask_start, mask_end], pass through unchanged.
+    masks_dir is taken as-is -- caller resolves which folder to point at
+    (e.g. sam3_masks_dir() / beat_id / "<subject>-<track_id>"), same as
+    _mask_overlay_mezzanine_clip.
 
     Writes every frame in the (handle-padded) range out as a PNG sequence
     under assets_dir()/overlay_frames,  appends the frames
     folder to the report CSV.'''
     fps = video_fps(video_path)
-    if tracker == "SAM3":
-          masks_dir = sam3_masks_dir()
 
     handles_frames = round(handles * fps)
     start_frame = max(0, start - handles_frames)
@@ -132,30 +245,27 @@ def mask_compositor(
     return
 
 
-def _mask_overlay_mezzanine_clip(beat, video_path, fps, out_dir):
-    '''Lossless extraction of a mask-overlay beat -- a tracked_subject beat
-    (segment_type "synthetic", but real footage, not a generated asset; see
-    producer.md's "Segment types & duration" exception) whose start_frame/
-    end_frame have already been resolved by find_cut_points. Burns the
-    SAM3 mask (sam3_masks_dir()/, filename keyed by absolute source-video
-    frame number -- see A_ROBOFLOW_SAM3.track_subject_sam3) onto each frame, then encodes
-    losslessly with the source video's own audio for that range -- not the
-    silent placeholder track _map_mezzanine_clip uses, since this is real
-    audio, just with an overlaid picture.
+def _mask_overlay_mezzanine_clip(video_path, fps, start_frame, end_frame, masks_dirs, out_dir, name):
+    '''Lossless extraction of a mask-overlay clip for an explicit frame
+    range. Burns every masks_dirs entry's mask onto each frame (composited
+    together if more than one -- e.g. several distinct subjects tracked in
+    the same beat), filename keyed by absolute source-video frame number --
+    see A_ROBOFLOW_SAM3.track_subject_sam3 -- then encodes losslessly with
+    the source video's own audio for that range -- not the silent
+    placeholder track _map_mezzanine_clip uses, since this is real audio,
+    just with an overlaid picture. No beat/track lookup here -- the caller
+    decides what masks_dirs contains and what name to use, so this works
+    equally for a paper-edit beat (assemble_paper_edit) or an ad hoc mask
+    folder from a notebook.
 
     cv2/OpenCV's FFV1 VideoWriter support is unreliable across builds, so
     frames are written to a temp PNG sequence first (same approach as
     R_map_animator/_map_mezzanine_clip) and ffmpeg does the actual lossless
     encode from that sequence.'''
-    start_frame = beat["start_frame"]
-    end_frame   = beat["end_frame"]
     start_s = start_frame / fps
     end_s   = (end_frame + 1) / fps
 
-    # masks_dir = sam3_masks_dir() / f"beat{beat['order']:02d}"
-    masks_dir = sam3_masks_dir()
-
-    tmp_frames_dir = out_dir / f"_beat{beat['order']:02d}_mask_frames"
+    tmp_frames_dir = out_dir / f"_{name}_mask_frames"
     tmp_frames_dir.mkdir(parents=True, exist_ok=True)
 
     cap = cv2.VideoCapture(str(video_path))
@@ -167,14 +277,15 @@ def _mask_overlay_mezzanine_clip(beat, video_path, fps, out_dir):
             if not ret:
                 if frame_idx < start_frame:
                     raise ValueError(
-                        f"{video_path} ended at frame {frame_idx}, before beat {beat['order']}'s "
+                        f"{video_path} ended at frame {frame_idx}, before {name}'s "
                         f"start {start_frame}."
                     )
                 break
             if frame_idx >= start_frame:
-                mask = _load_mask_bool(masks_dir, frame_idx)
-                if mask is not None:
-                    frame = apply_mask_overlay(frame, mask)
+                for masks_dir in masks_dirs:
+                    mask = _load_mask_bool(masks_dir, frame_idx)
+                    if mask is not None:
+                        frame = apply_mask_overlay(frame, mask)
                 cv2.imwrite(str(tmp_frames_dir / f"frame_{written:04d}.png"), frame)
                 written += 1
             frame_idx += 1
@@ -183,9 +294,9 @@ def _mask_overlay_mezzanine_clip(beat, video_path, fps, out_dir):
 
     if written == 0:
         shutil.rmtree(tmp_frames_dir)
-        raise ValueError(f"No frames written for beat {beat['order']} [{start_frame}, {end_frame}].")
+        raise ValueError(f"No frames written for {name} [{start_frame}, {end_frame}].")
 
-    out_path = out_dir / f"beat{beat['order']:02d}_mask.mkv"
+    out_path = out_dir / f"{name}_mask.mkv"
     subprocess.run(
         ["ffmpeg", "-y",
          "-framerate", str(fps), "-i", str(tmp_frames_dir / "frame_%04d.png"),
@@ -308,8 +419,13 @@ def assemble_paper_edit(video_path):
     for beat in beats:
         if beat["segment_type"] == "real":
             if beat.get("tracked_subject"):
-                print(f"making overlay for beat {beat}")
-                clip_paths.append(_mask_overlay_mezzanine_clip(beat, video_path, fps, mezzanine_dir))
+                beat_name = beat["beat_id"][0]
+                print(f"making overlay for beat {beat_name}")
+                # CHANGE THIS TO LOOKUP THE PRODUCER-DESIGNATED SET OF MASKS TO USE HERE, INSTEAD OF ALL
+                masks_dirs = [d for bid in beat["beat_id"] for d in list_track_id_dirs(sam3_masks_dir() / bid)]
+                clip_paths.append(_mask_overlay_mezzanine_clip(
+                    video_path, fps, beat["start_frame"], beat["end_frame"],
+                    masks_dirs, mezzanine_dir, name=beat_name))
             else:
                 clip_paths.append(_real_mezzanine_clip(beat, video_path, fps, mezzanine_dir))
         
@@ -429,12 +545,12 @@ def find_cut_points(beat, video_path, fps, analysis_2d_for_decisions=None,
     '''Finds this beat's actual in/out frames from its rough search window,
     audio-first (see module comment). Mutates and returns beat; no-op if
     beat isn't  auto_select -- other beats are someone else's job.'''
-    if not (beat.get("cut_mode") == "auto_select"):
+    if beat.get("cut_mode") != "auto_select" or beat.get("auto_select_resolved"):
         return beat
 
   
     #if we have masks
-    beat_analysis = (analysis_2d_for_decisions or {}).get(beat["order"]) #check for order/beat and don't crash
+    beat_analysis = (analysis_2d_for_decisions or {}).get(beat["beat_id"][0]) #check for beat_id/beat and don't crash
     if beat_analysis and beat_analysis["subject_first_frame"] is not None \
             and beat_analysis["subject_last_frame"] is not None:
         window_start_s = beat_analysis["subject_first_frame"] / fps
@@ -490,7 +606,6 @@ def find_cut_points(beat, video_path, fps, analysis_2d_for_decisions=None,
     start_frame = head_lo
     end_frame = tail_hi
 
-    beat["cut_mode"] = "fixed_frames"
     beat["start_frame"] = start_frame
     beat["end_frame"] = end_frame
     beat["auto_select_resolved"] = True

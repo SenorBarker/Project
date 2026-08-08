@@ -8,7 +8,7 @@ Rules the planning agent follows for paper edits. Every decision must cite a rul
         (an argument escalating, a dog breaking loose, a car pulling out without
         stopping, a hand reaching for the till). May repeat for multi-stage
         incidents.
-    - `EVENT_ACTION` — the core physical incident itself, that satisfies the essence of the query . May repeat alongside 
+    - `EVENT_ACTION` — the core physical incident itself, that satisfies the essence of the query . May repeat. highest priority to include 
     - `AFTERMATH` — resolution, reporting, aftermath state.
     - `SOUNDBITE` — audio-lead. the visuals are not important.
     - `MAP` — a synthetic map/recon asset request (interior or geographic).
@@ -22,7 +22,7 @@ Rules the planning agent follows for paper edits. Every decision must cite a rul
     R1.5 [FOOTAGE] — Establish a location before tighter coverage, unless the cold open withholds it.  
     R1.6 - Primary cut points are before and after beats start and end.
     R1.7 - A beat can contain multiple clips
-    R1.8 - Merge clips into one if they are from the same camera and there is overlap, or only a short pause between them.
+    R1.8 - Merge clips into one if they are from the same camera and there is either overlap, no gap, or only a short pause between them.
     R1.9 — Do not propose beats from the same camera, that overlap in time
     R1.10 -  Video is just as important as audio. If an audio cut splits useable video, then adjust the cut point
     R1.11 — Before finalizing a real segment's frame range, check the transcript for the same span (including gaps between tracked sequences): if dialogue discusses the subject there, add a beat or extend the segment rather than dropping it because tracking data alone was discontinuous.
