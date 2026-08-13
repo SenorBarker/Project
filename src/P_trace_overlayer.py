@@ -52,6 +52,7 @@ def BEV_trace_overlay(
     bev_png_path=None,
     max_width=1920, max_height=1080,
     camera_trail_color="#3498db", subject_trail_color="#e74c3c",
+    subject_trail_colors=None,
     trail_width=None, trail_opacity=0.85, dot_radius=None, dot_opacity=1.0,
     frustum_length=None, frustum_half_angle_deg=22.0,
     supersample=2,
@@ -60,7 +61,8 @@ def BEV_trace_overlay(
     """n_frames is the only thing controlling frame count -- unlike R_map_animator,
     it is never derived from duration*fps.
 
-    smooth_window_sec: subject_positions is smoothed with a centered running
+    subject_positions: dict[frame]->pos (single subject) or dict[name]->dict[frame]->pos
+    (multiple). smooth_window_sec: subject_positions is smoothed with a centered running
     average over this many seconds of real video time (using each frame's own
     frame_number/fps timestamp, not a fixed sample count) before being
     reprojected -- 1.0s is walking pace, tight enough to preserve real motion
@@ -119,14 +121,26 @@ def BEV_trace_overlay(
         "trail_color": camera_trail_color, "label": "camera",
     }]
 
+    _default_palette = ["#e74c3c", "#2ecc71", "#f39c12", "#9b59b6", "#1abc9c", "#e67e22"]
+
     if subject_positions is not None:
-        sub_frames = sorted(fn for fn in extra_indices if fn in subject_positions)
-        # drop NaN/inf positions here -- reproject()/interp_pos() have no NaN guard,
-        # so a bad point silently spreads into every frame whose t_frac interpolates
-        # across it (see P_trace_overlayer teleport investigation)
-        sub_frames = [fn for fn in sub_frames if np.isfinite(np.asarray(subject_positions[fn])).all()]
-        if len(sub_frames) >= 2:
-            sub_pos_raw = np.stack([subject_positions[fn] for fn in sub_frames])
+        # single subject: dict[frame]->pos. multiple: dict[name]->dict[frame]->pos.
+        is_multi = subject_positions and isinstance(next(iter(subject_positions.values())), dict)
+        subjects = subject_positions if is_multi else {"subject": subject_positions}
+        colors = subject_trail_colors or _default_palette
+        if not is_multi:
+            colors = [subject_trail_color]
+
+        for i, (name, positions) in enumerate(subjects.items()):
+            sub_frames = sorted(fn for fn in extra_indices if fn in positions)
+            # drop NaN/inf positions here -- reproject()/interp_pos() have no NaN guard,
+            # so a bad point silently spreads into every frame whose t_frac interpolates
+            # across it (see P_trace_overlayer teleport investigation)
+            sub_frames = [fn for fn in sub_frames if np.isfinite(np.asarray(positions[fn])).all()]
+            if len(sub_frames) < 2:
+                print(f"Skipping subject trace '{name}' -- only {len(sub_frames)} frame(s) overlap extra_indices.")
+                continue
+            sub_pos_raw = np.stack([positions[fn] for fn in sub_frames])
             sub_pos_smoothed = _time_smoothed(sub_frames, sub_pos_raw, fps, smooth_window_sec)
             sub_pos = torch.as_tensor(sub_pos_smoothed, dtype=torch.float32, device=DEVICE)
 
@@ -134,10 +148,8 @@ def BEV_trace_overlay(
             sub_pts = [(x * render_scale, y * render_scale) for x, y in zip(us.cpu().tolist(), vs.cpu().tolist())]
             traces.append({
                 "frames": sub_frames, "px_points": sub_pts, "heading_pts": None,
-                "trail_color": subject_trail_color, "label": "subject",
+                "trail_color": colors[i % len(colors)], "label": name,
             })
-        else:
-            print(f"Skipping subject trace -- only {len(sub_frames)} frame(s) overlap extra_indices.")
 
     # -- shared time axis: frame number is time-proportional for evenly-sampled video,
     # same hold-before-start/hold-after-end padding as R_map_animator.py:365-374 --

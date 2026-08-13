@@ -225,39 +225,6 @@ def _slugify_subject(subject):
 
 def track_subject_sam3(video_path, threshold=0.5,
                         requested_region="us", requested_plan="webrtc-gpu-large"):
-    """
-    Pipeline version of this Self-contained: 
-    
-    loads the current case's paper edit + derived flags from disk 
-
-    Reads the DRAFT paper edit, not the final one
-
-    Writes one MASK_NAME_FMT-named PNG per detection into
-    A_Config.sam3_masks_dir()/<beat_id>/<subject>-<track_id>/ -- one flat
-    folder per beat, with a subfolder per (subject, tracked-object ID) pair,
-    never merged with another pair's masks, so multiple simultaneous
-    detections (e.g. two people in frame, or two different subjects
-    requested in the same beat) don't overwrite each other. Filenames are
-    the absolute source-video frame number (start_frame + metadata.frame_id
-    - 1, see below). `beat_id` (not `order`) scopes the folder because
-    "beat order" isn't a stable identity: the Producer's revision pass can
-    renumber/merge beats, which orphaned already-generated mask folders
-    under the old beat{order:02d}/ scheme (see git history). The
-    subject-prefixed track_id folder name exists because raw SAM3 track IDs
-    reset per subject-query session, so two subjects in one beat could
-    otherwise collide on the same raw ID. Also writes every raw detection
-    record (unfiltered) to sam3_masks_dir()/detections.csv.
-
-    Returns None (and prints "Cell disabled") if MASK_OVERLAYS wasn't
-    requested. Otherwise returns analysis_2d_for_decisions: a dict keyed by
-    `beat_id` (stable, not `order`), each value built directly from the
-    frames this run just wrote for that beat (no re-reading masks off disk)
-    -- {beat_id: {"Subject_frames_present", "subject_first_frame",
-             "subject_last_frame", "subject_duration_frames",
-             "continuous frame sequences", "best_seq_idx", "masks_dir"}}.
-    A beat with zero detections across all its spans still gets an entry
-    (all Nones/empty), rather than aborting the whole run.
-    """
     import json
     import sys
     from collections import defaultdict
@@ -274,21 +241,17 @@ def track_subject_sam3(video_path, threshold=0.5,
         paper_edit_json_path.stem.replace("_paper_edit", "") + "_flags.json"
     )
     current_flags = json.loads(flags_path.read_text(encoding="utf-8"))
-
-    if not current_flags["MASK_OVERLAYS"]:
-        print("Cell disabled")
-        return None
-
+    
     cap = cv2.VideoCapture(str(video_path))
     fps = cap.get(cv2.CAP_PROP_FPS)
     cap.release()
 
     tracking_requests = build_tracking_requests(paper_edit_json_path, fps)
-    tracking_requests_by_beat = defaultdict(list)
+    tracking_requests_by_subject = defaultdict(list)
     for request in tracking_requests:
-        tracking_requests_by_beat[request["beat_id"]].append(request)
+        tracking_requests_by_subject[request["subject"]].append(request)
 
-    return _run_sam3_tracking(video_path, tracking_requests_by_beat, threshold, requested_region, requested_plan)
+    return _run_sam3_tracking(video_path, tracking_requests_by_subject, threshold, requested_region, requested_plan)
 
 
 def run_sam3_manual(video_path, subject, start_frame=None, end_frame=None,
@@ -297,12 +260,9 @@ def run_sam3_manual(video_path, subject, start_frame=None, end_frame=None,
     Manual version of this: ad-hoc SAM3 run against a single video file for
     one subject string -- no paper edit / case involved. start_frame/end_frame
     optionally restrict the run to a sub-range (inclusive); default is the
-    whole video. Builds a single-span tracking_requests_by_beat, keyed by a
-    subject slug (no paper_edit lifecycle here, so there's no beat_id --
-    the subject string is the only stable-enough identity), and runs it
-    through the same tracking core track_subject_sam3 uses (including the
-    make_span_clip keyframe-aligned cut), so masks/report/return shape are
-    identical.
+    whole video. Runs through the same tracking core track_subject_sam3
+    uses (including the make_span_clip keyframe-aligned cut), so
+    masks/report/return shape are identical.
     """
     cap = cv2.VideoCapture(str(video_path))
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -315,27 +275,26 @@ def run_sam3_manual(video_path, subject, start_frame=None, end_frame=None,
     start_s = start_frame / fps
     end_s = (end_frame + 1) / fps  # end_frame is inclusive; make_span_clip's end_s is not
 
-    beat_id = _slugify_subject(subject)
-    tracking_requests_by_beat = {beat_id: [{"subject": subject, "start_s": start_s, "end_s": end_s}]}
+    tracking_requests_by_subject = {subject: [{"subject": subject, "start_s": start_s, "end_s": end_s}]}
 
-    return _run_sam3_tracking(video_path, tracking_requests_by_beat, threshold, requested_region, requested_plan)
+    return _run_sam3_tracking(video_path, tracking_requests_by_subject, threshold, requested_region, requested_plan)
 
 
-def _run_sam3_tracking(video_path, tracking_requests_by_beat, threshold, requested_region, requested_plan):
+def _run_sam3_tracking(video_path, tracking_requests_by_subject, threshold, requested_region, requested_plan):
     """
-    Shared tracking core for track_subject_sam3 and run_sam3_manual: given a
-    video and a {beat_id: [{"subject", "start_s", "end_s"}, ...]} dict of
-    tracking *requests* (queries to search for -- not detections, which is
-    what SAM3 actually finds and writes), cuts a subclip per span, streams
-    each through the SAM3 workflow, writes masks, and builds/reports the
-    same analysis_2d_for_decisions shape either caller returns (keyed by
-    beat_id, not order -- see track_subject_sam3's docstring for why).
+    Shared tracking core for track_subject_sam3 and run_sam3_manual. Given
+    {subject: [{"subject","start_s","end_s"}, ...]}, cuts a subclip per
+    span, streams each through SAM3, writes masks, and returns
+    analysis_2d_for_decisions keyed by tracked instance ("{subject_slug}-
+    {instance_num}", e.g. "police-1", "police-2") -- a subject label can
+    resolve to multiple distinct tracked instances, and each gets its own
+    flat masks_dir folder and its own dict entry, not merged into one
+    per-label entry (see build_tracking_requests/D_2d_analysis).
     """
     from A_Config import sam3_masks_dir
     from C_CSV_report import add_to_report
     from D_2d_analysis import contiguous_durations
 
-    #--------do tracking-------------
     print("initialising tracking")
     api_key = os.environ["ROBOFLOW_API_KEY"]
     client = InferenceHTTPClient.init(api_url="https://serverless.roboflow.com", api_key=api_key)
@@ -346,31 +305,21 @@ def _run_sam3_tracking(video_path, tracking_requests_by_beat, threshold, request
     analysis_2d_for_decisions = {}
     raw_detection_rows = []
 
-    for beat_id, beat_requests in tracking_requests_by_beat.items():
-        beat_mask_dir = masks_root / beat_id
-        beat_mask_dir.mkdir(parents=True, exist_ok=True)
-        beat_frames = []
+    for subject, requests in tracking_requests_by_subject.items():
+        subject_slug = _slugify_subject(subject)
+        frames_by_instance = {}  # global instance_num -> [frame_idx, ...]
+        beat_ids_by_instance = {}  # global instance_num -> set(beat_id)
+        subject_beat_ids = set()  # union across all this subject's requests, for the no-detection case
+        next_instance_num = [1]  # mutable cell so on_data's closure can bump it
 
-        # Every subject in a beat shares that beat's own time range (see
-        # build_tracking_requests) -- cut the source span once per beat, not
-        # once per subject, so N subjects in one beat don't redundantly
-        # re-cut (and immediately discard) the identical clip N times.
-        span_start_s = beat_requests[0]["start_s"]
-        span_end_s = beat_requests[0]["end_s"]
-        if any(r["start_s"] != span_start_s or r["end_s"] != span_end_s for r in beat_requests):
-            raise ValueError(
-                f"[{beat_id}] subjects disagree on time span "
-                f"({[(r['subject'], r['start_s'], r['end_s']) for r in beat_requests]}) -- "
-                "expected every subject in a beat to share the beat's own span."
-            )
-        tmp_clip = beat_mask_dir / "_span_with_handle.mp4"
-        start_frame, fps, width, height = make_span_clip(video_path, tmp_clip, span_start_s, span_end_s)
-        print(f"[{beat_id}] requested {span_start_s}-{span_end_s}s -> keyframe-aligned start frame {start_frame}")
-
-        for request in beat_requests:
-            subject = request["subject"]
-            subject_slug = _slugify_subject(subject)
-            print("SAM seeks subject:", subject)
+        for request in requests:
+            span_start_s = request["start_s"]
+            span_end_s = request["end_s"]
+            request_beat_ids = request.get("beat_ids", [])
+            subject_beat_ids.update(request_beat_ids)
+            tmp_clip = masks_root / f"_span_with_handle_{subject_slug}.mp4"
+            start_frame, fps, width, height = make_span_clip(video_path, tmp_clip, span_start_s, span_end_s)
+            print(f"[{subject_slug}] requested {span_start_s}-{span_end_s}s -> keyframe-aligned start frame {start_frame}")
 
             source = VideoFileSource(str(tmp_clip), realtime_processing=False)
             config = StreamConfig(
@@ -381,19 +330,13 @@ def _run_sam3_tracking(video_path, tracking_requests_by_beat, threshold, request
                 requested_region=requested_region,
                 workflow_parameters={"class_names": subject, "threshold": threshold},
             )
-            # Context manager guarantees close() runs even if session init/run fails
-            # partway through -- without it, a failed/interrupted run (e.g. during
-            # repeated debugging reruns) can leave a stale session/allocation open
-            # server-side instead of being torn down.
-            #
-            # Session init against Roboflow's serverless WebRTC endpoint is flaky
-            # (read timeouts, intermittent 500s) regardless of region/plan, so
-            # retry the whole session rather than failing the beat on one bad
-            # attempt. Frames are only committed to beat_frames after a fully
-            # successful attempt, so a retry can't double-count frames from a
-            # partially-completed prior attempt.
+            # track_id from SAM3 is scoped to this one streaming session, so it
+            # restarts at 1 for every new span -- map it to the subject's
+            # globally-continuing instance number instead, or span 2's "instance 1"
+            # would silently overwrite span 1's "instance 1" on disk.
+            local_to_global = {}
             for attempt in range(1, SAM3_SESSION_MAX_ATTEMPTS + 1):
-                attempt_frames = []
+                attempt_frames = {}  # global instance_num -> [frame_idx, ...]
                 try:
                     with client.webrtc.stream(
                         source=source, workflow=WORKFLOW, workspace=WORKSPACE,
@@ -402,77 +345,85 @@ def _run_sam3_tracking(video_path, tracking_requests_by_beat, threshold, request
 
                         @session.on_data()
                         def on_data(data, metadata, start_frame=start_frame, width=width, height=height,
-                                    beat_mask_dir=beat_mask_dir, attempt_frames=attempt_frames,
-                                    beat_id=beat_id, subject_slug=subject_slug,
+                                    masks_root=masks_root, attempt_frames=attempt_frames,
+                                    subject_slug=subject_slug, local_to_global=local_to_global,
+                                    next_instance_num=next_instance_num,
                                     raw_detection_rows=raw_detection_rows, _debug_count=[0]):
                             frame_idx = start_frame + int(metadata.frame_id) - 1
                             dets = unwrap_predictions(data.get("predictions"))
-                            # DEBUG: full raw payload for the first 3 frames, one-line
-                            # summary thereafter -- to see whether the server is
-                            # returning empty predictions vs an error/warning embedded
-                            # in the response, without flooding stdout for the whole clip.
                             if _debug_count[0] < 3:
                                 print(f"[DEBUG frame {frame_idx}] raw data: {data}")
                             else:
                                 print(f"[DEBUG frame {frame_idx}] raw predictions count: {len(dets)}")
                             _debug_count[0] += 1
-                            #turn detections into actual masks -- one file per detection,
-                            #in its own subject+track-ID-named folder, never merged with
-                            #another detection or another subject's session
                             n_instances = 0
                             for d in dets:
-                                raw_detection_rows.append({"frame_idx": frame_idx, "beat_id": beat_id, "subject": subject_slug, **d})
+                                raw_detection_rows.append({"frame_idx": frame_idx, "subject": subject_slug, **d})
 
                                 mask = decode_mask_from_detection(d, image_shape=(height, width))
                                 if mask is not None:
-                                    track_id_dir = beat_mask_dir / f"{subject_slug}-{extract_track_id(d)}"
+                                    local_id = extract_track_id(d)
+                                    if local_id not in local_to_global:
+                                        local_to_global[local_id] = next_instance_num[0]
+                                        next_instance_num[0] += 1
+                                    instance_num = local_to_global[local_id]
+
+                                    track_id_dir = masks_root / f"{subject_slug}-{instance_num}"
                                     track_id_dir.mkdir(parents=True, exist_ok=True)
                                     cv2.imwrite(str(track_id_dir / MASK_NAME_FMT.format(frame_idx)), mask)
+                                    attempt_frames.setdefault(instance_num, []).append(frame_idx)
                                     n_instances += 1
-
-                            if n_instances:
-                                attempt_frames.append(frame_idx)
 
                         session.run()
                 except Exception as e:
                     if attempt == SAM3_SESSION_MAX_ATTEMPTS:
                         raise
-                    print(f"[{beat_id}] SAM3 session attempt {attempt}/{SAM3_SESSION_MAX_ATTEMPTS} "
+                    print(f"[{subject_slug}] SAM3 session attempt {attempt}/{SAM3_SESSION_MAX_ATTEMPTS} "
                           f"failed ({e!r}); retrying in {SAM3_SESSION_RETRY_BACKOFF_S}s")
                     time.sleep(SAM3_SESSION_RETRY_BACKOFF_S)
                     continue
                 else:
-                    beat_frames.extend(attempt_frames)
+                    for instance_num, frames in attempt_frames.items():
+                        frames_by_instance.setdefault(instance_num, []).extend(frames)
+                        beat_ids_by_instance.setdefault(instance_num, set()).update(request_beat_ids)
                     break
-        tmp_clip.unlink(missing_ok=True)
+            tmp_clip.unlink(missing_ok=True)
 
-        if beat_frames:
-            seqs, best_idx = contiguous_durations(beat_frames, tolerance=15)
-            entry = {
-                "Subject_frames_present": beat_frames,
-                "subject_first_frame": min(beat_frames),
-                "subject_last_frame": max(beat_frames),
-                "subject_duration_frames": max(beat_frames) - min(beat_frames),
-                "continuous frame sequences": seqs,
-                "best_seq_idx": best_idx,
-                "masks_dir": str(beat_mask_dir),
-            }
+        if frames_by_instance:
+            for instance_num, instance_frames in frames_by_instance.items():
+                instance_key = f"{subject_slug}-{instance_num}"
+                seqs, best_idx = contiguous_durations(instance_frames, tolerance=15)
+                entry = {
+                    "Subject_frames_present": instance_frames,
+                    "subject_first_frame": min(instance_frames),
+                    "subject_last_frame": max(instance_frames),
+                    "subject_duration_frames": max(instance_frames) - min(instance_frames),
+                    "continuous frame sequences": seqs,
+                    "best_seq_idx": best_idx,
+                    "masks_dir": str(masks_root / instance_key),
+                    "beat_ids": sorted(beat_ids_by_instance.get(instance_num, set())),
+                }
+                analysis_2d_for_decisions[instance_key] = entry
+                add_to_report({
+                    f"{instance_key}_subject_first_frame": entry["subject_first_frame"],
+                    f"{instance_key}_subject_last_frame": entry["subject_last_frame"],
+                })
         else:
-            print(f"[{beat_id}] no detections across any requested span")
+            print(f"[{subject_slug}] no detections across any requested span")
             entry = {
                 "Subject_frames_present": [],
                 "subject_first_frame": None,
                 "subject_last_frame": None,
                 "continuous frame sequences": [],
                 "best_seq_idx": None,
-                "masks_dir": str(beat_mask_dir),
+                "masks_dir": str(masks_root / subject_slug),
+                "beat_ids": sorted(subject_beat_ids),
             }
-
-        analysis_2d_for_decisions[beat_id] = entry
-        add_to_report({
-            f"{beat_id}_subject_first_frame": entry["subject_first_frame"],
-            f"{beat_id}_subject_last_frame": entry["subject_last_frame"],
-        })
+            analysis_2d_for_decisions[subject_slug] = entry
+            add_to_report({
+                f"{subject_slug}_subject_first_frame": entry["subject_first_frame"],
+                f"{subject_slug}_subject_last_frame": entry["subject_last_frame"],
+            })
 
     if raw_detection_rows:
         pd.DataFrame(raw_detection_rows).to_csv(masks_root / "detections.csv", index=False)

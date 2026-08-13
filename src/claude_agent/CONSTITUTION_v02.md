@@ -46,4 +46,4 @@ Rules the planning agent follows for paper edits. Every decision must cite a rul
     R7.2 — Mark unresolved choices as [JUDGMENT CALL].
     
 
-Draft v0.2 — edit freely. Keep IDs stable.
+Draft v2.1 — edit freely. Keep IDs stable.

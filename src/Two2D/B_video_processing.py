@@ -36,6 +36,16 @@ def _blur_score(gray: np.ndarray) -> float:
     return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
 
+def video_dims(video_path: str) -> tuple[int, int, float]:
+    """Returns (width, height, fps)."""
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open video: {video_path}")
+    vid_w, vid_h, fps = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)), cap.get(cv2.CAP_PROP_FPS)
+    cap.release()
+    return vid_w, vid_h, fps
+
+
 def image_sequencer(
     video_path: str,
     output_dir: str,
@@ -371,6 +381,31 @@ def video_fps(video_path):
     r_frame_rate = json.loads(probe.stdout)["streams"][0]["r_frame_rate"]
     num, den = r_frame_rate.split("/")
     return float(num) / float(den)
+
+
+def frames_at_times(video_path, target_times_s):
+    '''INPUT  : path to a video file, list of target times in seconds (e.g. one
+                per subject)
+       OUTPUT : list[ndarray] -- one frame per target, the frame whose own
+                decoded timestamp (CAP_PROP_POS_MSEC) is nearest that target.
+                Single sequential cap.read() pass, same principle as
+                image_sequencer's Pass 3 -- no cap.set(POS_FRAMES, N)
+                mid-stream (unreliable on VFR).'''
+    cap = cv2.VideoCapture(str(video_path))
+    best_frame = [None] * len(target_times_s)
+    best_dt = [float("inf")] * len(target_times_s)
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        t_s = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+        for i, target in enumerate(target_times_s):
+            dt = abs(t_s - target)
+            if dt < best_dt[i]:
+                best_dt[i] = dt
+                best_frame[i] = frame.copy()
+    cap.release()
+    return best_frame
 
 
 if __name__ == "__main__":

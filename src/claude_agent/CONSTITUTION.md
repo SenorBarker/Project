@@ -49,10 +49,10 @@ Rules the planning agent follows for paper edits. Every decision must cite a rul
     R4.6 - Ideas must be completed. e.g a a question receives an answer
     
 5. Metrics & Map Usage  
-    R5.1 —   
-    R5.2 — Use a map only if geography matters. spatial questions like "where...", "how far" can be considered geographical questions.  
-    R5.3 —   
-    R5.4 — RECON_CAM_POSES/RECON_3D need true multi-viewpoint coverage (multiple cameras or moving camera);  — flag [JUDGMENT CALL] if unstated. CUT3R_RECON/VGGT_O_RECON can work from a statrionary pan — only require that the description states the wearer/camera moved or turned during the span.
+    R5.1 — MAP synthetics are high prioirity. Always request one.  
+    R5.2 — Use a google map only if geography matters. spatial questions like "where...", "how far" can be considered geographical questions.  
+    R5.3 — MAP durations need to be as long as possible, without introducing clear recon errors.
+    R5.4 — RECON_CAM_POSES/RECON_3D need true multi-viewpoint coverage (multiple cameras or moving camera);  — flag [JUDGMENT CALL] if unstated. VGGT_O_RECON can work from a statrionary pan — only require that the description states the wearer/camera moved or turned during the span.
     
 6. Structure & Pacing  
     R6.1 — Do not open with out-of-order soundbites, hooks or teasers
@@ -72,13 +72,13 @@ Rules the planning agent follows for paper edits. Every decision must cite a rul
     R8.1 — Captions must not cover the subject/action and must stay in safe area. The agent only decides whether a caption belongs and what it says; placement and line count are computed.
 
 9. Editorial
-    R9.1 — Every beat must have a strong reason to be included. If the answer to the brief will not change if you remove the beat, then remove it 
+    R9.1 — Every beat must have a strong reason to be included. This test does not apply to beats this constitution explicitly commands you to include (e.g. R5.1's mandatory MAP beat) — those are never removed on justification grounds. For every other beat: if the answer to the brief will not change when you remove it, remove it. 
 
 10. Analysis
     R10.1 —  Audio claims should be backed-up by video proof. Request Mask overlays to identfy key people and objects if they are critical to resolve the prompt. flag: [NEEDS VISUAL REVIEW] on this beat
     R10.2 — Use a metric only if it adds something new.
     R10.3 — Metrics support claims; they do not replace sourcing.
     R10.4 — Physics-based analysis (speed, distance, etc) requires depth, so you must demand 3D recon to solve this
-    R10.5 — Metrics can and will support the answer to the prompt. use many, but they must satisfy R10.2 and R10.3
+    R10.5 — Metrics can and will support the answer to the prompt. use many, but they must satisfy R10.2 and 
    
-Draft v0.4 — edit freely. Keep IDs stable.
+Draft v5 — edit freely. Keep IDs stable.

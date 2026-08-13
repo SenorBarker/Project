@@ -10,6 +10,8 @@ from claude_agent_sdk import (
     AssistantMessage,
     ResultMessage,
     TextBlock,
+    ThinkingBlock,
+    ThinkingConfigEnabled,
     ToolUseBlock,
 )
 from A_Config import case_dir , REPO_ROOT, case_name
@@ -62,7 +64,10 @@ async def _run_producer_agent_async(task_prompt: str, log):
             permission_mode="acceptEdits",  # auto-approve file writes, no interactive prompt
             tools=["Read", "Grep", "Glob", "Write"],  # actual restriction, not just allowed_tools
             system_prompt=system_prompt,
-            effort="low",  # was unconstrained adaptive thinking — 17190 output tokens on the last run, ~$0.37 of the $0.371 total
+            effort="low",
+            # summarized (not omitted) so we get a readout of what the model
+            # actually weighed re: MAP/R5.1 vs R9.1, instead of a black box
+            thinking=ThinkingConfigEnabled(type="enabled", budget_tokens=4096, display="summarized"),
         ),
     ):
         if isinstance(message, AssistantMessage):
@@ -76,13 +81,19 @@ async def _run_producer_agent_async(task_prompt: str, log):
                 f"cache_write={u.get('cache_creation_input_tokens', '?')} "
                 f"cache_read={u.get('cache_read_input_tokens', '?')}"
             )
+            log(f"turn {turn_num} content blocks: {[type(b).__name__ for b in message.content]}")
             for block in message.content:
                 if isinstance(block, TextBlock):
                     final_text += block.text
+                elif isinstance(block, ThinkingBlock):
+                    log(f"thinking:\n{block.thinking}")
                 elif isinstance(block, ToolUseBlock):
                     log(f"tool call: {block.name} ({block.input.get('file_path', block.input.get('pattern', ''))})")
                     if block.name == "Write":
                         files_written.append(block.input.get("file_path"))
+                        log(f"write content:\n{block.input.get('content', '')}")
+                else:
+                    log(f"unhandled block type {type(block).__name__}: {block!r}")
         elif isinstance(message, ResultMessage):
             log(
                 f"result: status={message.subtype} num_turns={message.num_turns} "
@@ -147,13 +158,22 @@ def run_producer_agent(task_prompt: str, mode: str = "revision"):
     # (flags dict, HTML) is derived from it deterministically, no model involved,
     # and lives in the next cell so it can be re-run on its own (e.g. after
     # editing render_paper_edit.py) without paying for another agent call.
-    output_filename_suffix = "_paper_edit_draft.json" if mode == "draft" else "_paper_edit.json"
+    # producer.md only knows MODE: draft / MODE: revision -- a "draft2"
+    # prompt is still MODE: draft to the model, so it writes the same
+    # _paper_edit_draft.json filename as the first pass. Rename it here so
+    # it doesn't collide with (or overwrite) the first draft on disk.
+    output_filename_suffix = "_paper_edit_draft.json" if mode in ("draft", "draft2") else "_paper_edit.json"
     paper_edit_json_path = next(out_dir.glob(f"*{output_filename_suffix}"))
+
+    if mode == "draft2":
+        draft2_path = paper_edit_json_path.with_name(paper_edit_json_path.stem + "_2" + paper_edit_json_path.suffix)
+        paper_edit_json_path = paper_edit_json_path.rename(draft2_path)
+
     print(f"\npaper_edit_json_path = {paper_edit_json_path}")
     
     return paper_edit_json_path
 
-def build_producer_prompt_pass1(brief: str, analysis_2d_for_decisions: dict, producer_flags: dict) -> str:
+def build_producer_prompt_draft1(brief: str, analysis_2d_for_decisions: dict, producer_flags: dict) -> str:
     query_dir = case_dir() / "012_Gemini_outputs"
     description_text = (query_dir / f"{case_name()}_description.txt").read_text(encoding="utf-8")
     objects_text = (query_dir / f"{case_name()}_objects.txt").read_text(encoding="utf-8")
@@ -170,6 +190,7 @@ def build_producer_prompt_pass1(brief: str, analysis_2d_for_decisions: dict, pro
             {brief}         
 
             SOURCE MATERIAL:
+
             {source_text}
 
             2D ANALYSIS — deterministic measurement, treat as fact:
@@ -181,12 +202,48 @@ def build_producer_prompt_pass1(brief: str, analysis_2d_for_decisions: dict, pro
             Produce the paper edit per your instructions.
             """
 
-def build_producer_prompt_pass2(brief: str, analysis_2d_for_decisions: dict, producer_flags: dict) -> str:
+def build_producer_prompt_draft2(brief: str, analysis_2d_for_decisions: dict, producer_flags: dict) -> str:
     query_dir = case_dir() / "012_Gemini_outputs"
     description_text = (query_dir / f"{case_name()}_description.txt").read_text(encoding="utf-8")
     objects_text = (query_dir / f"{case_name()}_objects.txt").read_text(encoding="utf-8")
     transcript_text = (query_dir / f"{case_name()}_transcript_full.txt").read_text(encoding="utf-8")
-    source_text = f"DESCRIPTION\n{description_text}\nOBJECTS\n{objects_text}\nAUDIO TRANSCRIPT\n{transcript_text}"
+    places_text  =   (query_dir / f"{case_name()}_places.txt").read_text(encoding="utf-8")                                                                        
+    source_text = f"DESCRIPTION\n{description_text}\nOBJECTS\n{objects_text}\nAUDIO TRANSCRIPT\n{transcript_text}\nPLACES{places_text}"
+    draft_paper_edit_text = (case_dir() / "012_agent_p_output" / f"{case_name()}_paper_edit_draft.json").read_text(encoding="utf-8")
+    assistant_feedback  =  (case_dir() / "012_agent_p_output" / f"{case_name()}_draft_ast_fb.json").read_text(encoding="utf-8")
+    return f"""
+            MODE: draft
+
+            CASE_NAME: {case_name()}
+
+            BRIEF:
+            {brief}        
+
+            ERROR_CORRECTION: (your draft)
+            {draft_paper_edit_text} 
+            ERROR_CORRECTION: and the mistakes you have made
+            {assistant_feedback}
+
+            SOURCE MATERIAL:
+
+            {source_text}
+
+            2D ANALYSIS — deterministic measurement, treat as fact:
+            {analysis_2d_for_decisions}
+
+            AVAILABLE FLAGS (things you may request by setting True — do not touch anything not listed):
+            {producer_flags}
+
+            Produce the paper edit per your instructions.
+            """
+
+def build_producer_prompt_revision(brief: str, analysis_2d_for_decisions: dict, producer_flags: dict) -> str:
+    query_dir = case_dir() / "012_Gemini_outputs"
+    description_text = (query_dir / f"{case_name()}_description.txt").read_text(encoding="utf-8")
+    objects_text = (query_dir / f"{case_name()}_objects.txt").read_text(encoding="utf-8")
+    transcript_text = (query_dir / f"{case_name()}_transcript_full.txt").read_text(encoding="utf-8")
+    places_text  =   (query_dir / f"{case_name()}_places.txt").read_text(encoding="utf-8")                                                                        
+    source_text = f"DESCRIPTION\n{description_text}\nOBJECTS\n{objects_text}\nAUDIO TRANSCRIPT\n{transcript_text}\nPLACES{places_text}"
     draft_paper_edit_text = (case_dir() / "012_agent_p_output" / f"{case_name()}_paper_edit_draft.json").read_text(encoding="utf-8")
 
     return f"""

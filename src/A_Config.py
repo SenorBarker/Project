@@ -49,6 +49,7 @@ def _with_experiment(base):
 
 #make the directories either case_dir / XXX_thing, or case_dir / XXX_thing / experiment
 def source_dir(): return case_dir() / "010_source"
+def source_video_path(): return next(source_dir().glob("*.mp4"))
 def query_dir(): return case_dir() / "012_Gemini_outputs"
 def yolo_masks_dir(): return _with_experiment(case_dir() / "015_YOLO")
 def sam3_masks_dir(): return _with_experiment(case_dir() / "015_SAM3_masks")

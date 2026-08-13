@@ -14,6 +14,7 @@ from C_CSV_report import add_to_report
 from A_Config import assets_dir, asset_name, case_dir, report_path, to_report_path, sam3_masks_dir
 from Two2D.B_video_processing import video_fps
 from D_2d_analysis import list_track_id_dirs
+from run_models.A_ROBOFLOW_SAM3 import _slugify_subject
 
 MASK_NAME_FMT = "{:04d}.png"
 
@@ -78,20 +79,11 @@ def video_overlay_edit(
         color=(0, 200, 0),
         alpha=0.4,
         name=None):
-    '''Restored from before the mask_compositor rename (commit 4772b19),
-    which dropped this in favor of a PNG-sequence-only output -- kept
-    alongside mask_compositor since they serve different purposes: this one
-    is a compressed, shareable/reviewable mp4 with real audio, quick to open
-    and skim, vs. mask_compositor's raw frame dump. Like video_edit, but
+    '''Makes mask overlay video: compressed, shareable/reviewable mp4 with real audio,
+
     burns a mask-highlight overlay onto any frame in [start, end] (frame
     numbers, the video range) that both has a matching MASK_NAME_FMT-named
-    PNG in masks_dir AND falls within [mask_start, mask_end]. masks_dir may
-    hold masks for a wider range than wanted here (e.g. other detections in
-    the same sequence) -- mask_start/mask_end scope which of those files
-    actually get used, independent of the video's start/end. Frames with no
-    mask, or outside [mask_start, mask_end], pass through unchanged.
-    masks_dir is taken as-is -- caller resolves which folder to point at,
-    same as mask_compositor/_mask_overlay_mezzanine_clip.
+    PNG in masks_dir AND falls within [mask_start, mask_end]. 
 
     cv2 can't touch audio, so this is done in two passes: frames are written
     to a silent temp video, then muxed with the original video's audio
@@ -353,15 +345,22 @@ def _real_mezzanine_clip(beat, video_path, fps, out_dir):
     return out_path
 
 
-def _map_mezzanine_clip(beat, target_w, target_h, target_fps, out_dir):
+def _map_mezzanine_clip(beat, type, target_w, target_h, target_fps, out_dir):
     '''Turns the map image sequence into a lossless clip scaled/padded (not
     stretched) to match the main footage, with a silent PCM audio track so
     it concatenates cleanly alongside the real clips' real audio.
 
-    target_fps is also the rate map_frames/ was rendered at -- R_map_animator
-    derives its fps from this same source video, so there's no resample
-    here, just a straight read at the rate the frames already are.'''
-    frames_dir = assets_dir() / "map_frames"
+    target_fps is also the rate the frames were rendered at -- R_map_animator
+    (GOOGLE_MAP) / P_trace_overlayer (BEV_MAP) derive their fps from this same
+    source video, so there's no resample here, just a straight read at the
+    rate the frames already are.'''
+    if type == 'GOOGLE_MAP':
+        frames_dir = assets_dir() / "map_frames"
+    elif type == 'BEV_MAP':
+        frames_dir = assets_dir() / "bev_trace_frames"
+    else:
+        raise ValueError(f"Unknown map type {type!r} -- expected 'GOOGLE_MAP' or 'BEV_MAP'.")
+
     out_path = out_dir / f"beat{beat['order']:02d}_map.mkv"
     subprocess.run(
         ["ffmpeg", "-y",
@@ -422,7 +421,12 @@ def assemble_paper_edit(video_path):
                 beat_name = beat["beat_id"][0]
                 print(f"making overlay for beat {beat_name}")
                 # CHANGE THIS TO LOOKUP THE PRODUCER-DESIGNATED SET OF MASKS TO USE HERE, INSTEAD OF ALL
-                masks_dirs = [d for bid in beat["beat_id"] for d in list_track_id_dirs(sam3_masks_dir() / bid)]
+                # masks stored flat per tracked instance now, not per beat_id or subject
+                # label -- frame filtering happens per-frame in _mask_overlay_mezzanine_clip, not here
+                masks_dirs = [
+                    d for subject in beat["tracked_subject"]
+                    for d in list_track_id_dirs(sam3_masks_dir(), _slugify_subject(subject))
+                ]
                 clip_paths.append(_mask_overlay_mezzanine_clip(
                     video_path, fps, beat["start_frame"], beat["end_frame"],
                     masks_dirs, mezzanine_dir, name=beat_name))
@@ -430,7 +434,8 @@ def assemble_paper_edit(video_path):
                 clip_paths.append(_real_mezzanine_clip(beat, video_path, fps, mezzanine_dir))
         
         elif beat["segment_type"] == "synthetic" and beat["archetype"] == "MAP":
-            clip_paths.append(_map_mezzanine_clip(beat, target_w, target_h, fps, mezzanine_dir))
+            type = next(f for f in beat["requested_flags"] if f in ("GOOGLE_MAP", "BEV_MAP"))
+            clip_paths.append(_map_mezzanine_clip(beat, type, target_w, target_h, fps, mezzanine_dir))
         else:
             raise NotImplementedError(
                 f"Beat {beat['order']} ({beat['segment_type']}/{beat['archetype']}) "
@@ -548,7 +553,6 @@ def find_cut_points(beat, video_path, fps, analysis_2d_for_decisions=None,
     if beat.get("cut_mode") != "auto_select" or beat.get("auto_select_resolved"):
         return beat
 
-  
     #if we have masks
     beat_analysis = (analysis_2d_for_decisions or {}).get(beat["beat_id"][0]) #check for beat_id/beat and don't crash
     if beat_analysis and beat_analysis["subject_first_frame"] is not None \

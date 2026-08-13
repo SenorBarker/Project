@@ -81,4 +81,4 @@ Rules the planning agent follows for paper edits. Every decision must cite a rul
     R10.4 — Physics-based analysis (speed, distance, etc) requires depth, so you must demand 3D recon to solve this
     R10.5 — Metrics can and will support the answer to the prompt. use many, but they must satisfy R10.2 and R10.3
    
-Draft v0.4 — edit freely. Keep IDs stable.
+Draft v4 — edit freely. Keep IDs stable.

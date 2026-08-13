@@ -130,46 +130,150 @@ def render_and_save(paper_edit_json_path: str | Path) -> Path:
     return html_path
 
 
-def derive_flags(paper_edit_json_path: str | Path, available_flag_keys) -> dict:
-    """Builds the flags dict straight from Producer's own paper-edit JSON —
-    unions every beat's requested_flags against the full key set. No model
-    call: Producer already wrote this data once, in requested_flags; this
-    is a lookup, not a second document to generate."""
+def _beat_flags(beat: dict, fps: float, gps_signal: str | None, errors: list[str], notes: list[str]) -> set[str]:
+    """Runs every rule against ONE beat, returns the flags that beat
+    actually needs. Ignores beat["requested_flags"] for any key we have a
+    rule for -- that field is LLM output and is not trusted, except where
+    noted below (missing data we can't check ourselves). Wrong/missing
+    flags go to `notes`, missing data Producer must supply goes to
+    `errors` -- neither is raised, so every beat gets checked in one pass."""
+    flags = set()
+    requested = beat.get("requested_flags") or []
+    beat_id = beat.get("beat_id")
+
+    # TRACKING -- beat asks for a subject to be tracked.
+    if beat.get("tracked_subject"):
+        flags.add("TRACKING")  # CHECK
+        if "TRACKING" not in requested:
+            notes.append(f"Beat {beat_id}: added TRACKING (Producer didn't request it).")
+
+    if beat.get("archetype") == "MAP":
+        # A map places subjects/objects in the field of view, so it always
+        # needs them tracked -- not conditional on the LLM remembering to
+        # ask for it (see producer.md: MAP requires TRACKING).
+        if not beat.get("tracked_subject"):
+            errors.append(
+                f"MAP beat {beat_id} needs TRACKING but has no "
+                f"tracked_subject -- Producer must list what to track."
+            )
+            if "TRACKING" in requested:
+                flags.add("TRACKING")  # can't verify, but don't override what was right
+        else:
+            flags.add("TRACKING")  # CHECK
+            if "TRACKING" not in requested:
+                notes.append(f"Beat {beat_id}: added TRACKING (Producer didn't request it).")
+
+        window_start = beat.get("search_window_start_seconds")
+        window_end = beat.get("search_window_end_seconds")
+        if window_start is None or window_end is None:
+            errors.append(
+                f"MAP beat {beat_id} needs a recon but has no "
+                f"search_window_start_seconds/search_window_end_seconds -- Producer must set them."
+            )
+            for f in ("RECON_CAM_POSES", "RECON_3D"):
+                if f in requested:
+                    flags.add(f)  # can't verify, but don't override what was right
+        else:
+            # RECON_CAM_POSES vs RECON_3D -- source footage duration,
+            # >1min vs <=1min. NOT the map beat's own duration_seconds.
+            right_flag = "RECON_CAM_POSES" if (window_end - window_start) > 60 else "RECON_3D"
+            flags.add(right_flag)  # CHECK
+            if right_flag not in requested:
+                notes.append(f"Beat {beat_id}: added {right_flag} (Producer didn't request it).")
+
+        # GOOGLE_MAP vs BEV_MAP -- GPS_signal from analysis_2d_for_decisions.
+        if gps_signal is not None:
+            right_flag = "GOOGLE_MAP" if gps_signal == "yes" else "BEV_MAP"
+            flags.add(right_flag)  # CHECK
+            if right_flag not in requested:
+                notes.append(f"Beat {beat_id}: added {right_flag} (Producer didn't request it).")
+        else:
+            for f in ("GOOGLE_MAP", "BEV_MAP"):
+                if f in requested:
+                    flags.add(f)
+
+    # PROJECTION_MAP -- no rule yet on when it's needed, trust the LLM on
+    # that. But it's a novel view of a RECON_3D, so it always needs one.
+    if "PROJECTION_MAP" in requested:
+        flags.add("PROJECTION_MAP")
+        if beat.get("search_window_start_seconds") is None or beat.get("search_window_end_seconds") is None:
+            errors.append(
+                f"Beat {beat_id} needs RECON_3D (for PROJECTION_MAP) but has no "
+                f"search_window_start_seconds/search_window_end_seconds -- Producer must set them."
+            )
+            if "RECON_3D" in requested:
+                flags.add("RECON_3D")  # can't verify, but don't override what was right
+        else:
+            flags.add("RECON_3D")  # CHECK
+            if "RECON_3D" not in requested:
+                notes.append(f"Beat {beat_id}: added RECON_3D (Producer didn't request it).")
+
+    # MASK_OVERLAYS -- no rule yet, trust the LLM. A mask overlay always
+    # needs a tracked subject to draw the mask from, so it switches TRACKING
+    # on too, regardless of whether the beat separately requested it.
+    if "MASK_OVERLAYS" in requested:
+        if not beat.get("tracked_subject"):
+            errors.append(
+                f"Beat {beat_id} requests MASK_OVERLAYS but has "
+                f"no tracked_subject -- Producer must list what to track."
+            )
+        else:
+            flags.add("MASK_OVERLAYS")
+            flags.add("TRACKING")  # CHECK
+            if "TRACKING" not in requested:
+                notes.append(f"Beat {beat_id}: added TRACKING (Producer didn't request it).")
+
+    # MULTICAM -- out of scope per producer.md, never on.
+
+    return flags
+
+
+def derive_flags(paper_edit_json_path: str | Path, available_flag_keys, fps: float, gps_signal: str = None) -> tuple[dict, list[str], list[str]]:
+    """For each beat, checks its flags against the rules in _beat_flags and
+    corrects any that are wrong. Final dict is the union across all beats.
+    Collects every beat's problems before raising, so Producer gets the
+    full list to fix in one revision pass instead of one-at-a-time."""
     data = json.loads(Path(paper_edit_json_path).read_text(encoding="utf-8"))
-    requested = set()
-    for beat in data["beats"]:
-        for flag in beat.get("requested_flags") or []:
-            requested.add(flag)
-    return {k: (k in requested) for k in available_flag_keys}
+    beats = data["beats"]
+
+    errors: list[str] = []
+    notes: list[str] = []
+    on = set()
+    for beat in beats:
+        on |= _beat_flags(beat, fps, gps_signal, errors, notes)
+
+    if notes:
+        print("Paper edit flag corrections (feed back to Producer):\n" + "\n".join(f"- {n}" for n in notes))
+
+    if errors:
+        print("Paper edit flag problems (feed back to Producer):\n" + "\n".join(f"- {e}" for e in errors))
+
+    flags = {k: (k in on) for k in available_flag_keys}
+    return flags, errors, notes
 
 
-def derive_and_save_flags(paper_edit_json_path: str | Path, available_flag_keys) -> Path:
+def derive_and_save_flags(paper_edit_json_path: str | Path, available_flag_keys, fps: float, gps_signal: str = None) -> Path:
+    """Writes <case_name>_flags.json as before. Also writes
+    <case_name>_assistant_feedback.json (errors + notes from derive_flags) --
+    that's the file to read from when building a MODE: revision re-draft
+    prompt for Producer."""
     json_path = Path(paper_edit_json_path)
-    flags = derive_flags(json_path, available_flag_keys)
+    flags, errors, notes = derive_flags(json_path, available_flag_keys, fps, gps_signal)
     flags_path = json_path.with_name(json_path.stem.replace("_paper_edit", "") + "_flags.json")
     flags_path.write_text(json.dumps(flags, indent=2), encoding="utf-8")
+
+    feedback_path = json_path.with_name(json_path.stem.replace("_paper_edit", "") + "_ast_fb.json")
+    feedback_path.write_text(json.dumps({"errors": errors, "notes": notes}, indent=2), encoding="utf-8")
+
     return flags_path
 
 
 def build_tracking_requests(paper_edit_json_path: str | Path, fps: float) -> list[dict]:
-    """Collects every beat's tracked_subject list into a tracking-*request*-
-    shaped list[{"beat_id","subject","start_s","end_s"}] for
-    A_YOLO_seg.track_subject_masks_from_hints or
-    A_ROBOFLOW_SAM3.track_subject_sam3 -- one dict per requested subject.
-    Deliberately not called "detections": these are queries asking a
-    tracker to go find something, not results a tracker already found (see
-    e.g. A_ROBOFLOW_SAM3's `dets`/`raw_detection_rows`, which are the actual
-    detections this feeds into). Each subject in a beat's tracked_subject
-    list shares that beat's own time range (no per-subject sub-spans).
-    Beats reach this function in draft form (before find_all_cut_points
-    resolves cut points), so fixed_frames beats convert start_frame/
-    end_frame via fps and auto_select beats fall back to their (still
-    coarse) search window. beat_id is drawn from beat["beat_id"][0] -- at
-    draft time this list is always single-element; multi-element beat_id
-    lists only appear later, after a revision-pass merge, and are a
-    read-time (not write-time) concern."""
+    """Merges tracked_subject spans per subject into list[{"subject","start_s","end_s","beat_ids"}].
+    A gem_person_id dict entry groups under subject="person" (one class scan, not per-person)."""
     data = json.loads(Path(paper_edit_json_path).read_text(encoding="utf-8"))
-    requests = []
+    spans_by_subject = {}
+
     for beat in data["beats"]:
         tracked = beat.get("tracked_subject")
         if not tracked:
@@ -180,12 +284,26 @@ def build_tracking_requests(paper_edit_json_path: str | Path, fps: float) -> lis
         else:
             start_s = beat["search_window_start_seconds"]
             end_s = beat["search_window_end_seconds"]
-        beat_id = beat["beat_id"][0]
-        for subject in tracked:
-            requests.append({
-                "beat_id": beat_id,
-                "subject": subject,
-                "start_s": start_s,
-                "end_s": end_s,
-            })
+        beat_ids = tuple(beat.get("beat_id") or [])
+        for tracked_subject_entry in tracked:
+            subject = "person" if isinstance(tracked_subject_entry, dict) else tracked_subject_entry
+            spans_by_subject.setdefault(subject, []).append((start_s, end_s, beat_ids))
+
+    requests = []
+    for subject, spans in spans_by_subject.items():
+        for start_s, end_s, beat_ids in _merge_spans(spans):
+            requests.append({"subject": subject, "start_s": start_s, "end_s": end_s,
+                              "beat_ids": sorted(beat_ids)})
     return requests
+
+
+def _merge_spans(spans: list[tuple[float, float, tuple[str, ...]]]) -> list[tuple[float, float, set]]:
+    """Merges overlapping/touching (start_s, end_s, beat_ids) spans into
+    their union, unioning beat_ids along with the time range."""
+    merged = []
+    for start_s, end_s, beat_ids in sorted(spans, key=lambda s: (s[0], s[1])):
+        if merged and start_s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end_s), merged[-1][2] | set(beat_ids))
+        else:
+            merged.append((start_s, end_s, set(beat_ids)))
+    return merged

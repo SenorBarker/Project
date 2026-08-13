@@ -74,4 +74,4 @@ Rules the planning agent follows for paper edits. Every decision must cite a rul
 9. Editorial
     R9.1 — Every beat must have a strong reason to be included. If the answer to the brief will not change if you remove the beat, then remove it 
 
-Draft v0.3 — edit freely. Keep IDs stable.
+Draft v3 — edit freely. Keep IDs stable.
