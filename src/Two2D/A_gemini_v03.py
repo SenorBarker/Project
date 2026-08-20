@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 import json
+import re
 import dotenv
 import cv2
 
@@ -42,14 +43,19 @@ After your response, append a <machine> block with this exact JSON:
 {"people": [{"person_id": "...", "descriptor": "...", "appearances": [{"start_s": 0, "end_s": 0, "box_2d": [0, 0, 0, 0]}]}]}
 </machine>
 Give every distinct person who appears anywhere in the video a stable person_id
-(short, e.g. "person-1", "person-2") -- the same person must keep the same person_id
+(zero-padded to two digits, e.g. "person-01", "person-02") -- the same person must keep the same person_id
 across every appearance, even in separate, non-contiguous time windows. "descriptor"
 is a short human-readable description (role, clothing, position) to help a human
 tell people apart, but is not used to identify them programmatically -- person_id is
-the only identity key. List every time window (start_s, end_s, integer seconds) that
-person is visible, across the whole video, as separate entries in "appearances". For
-each appearance also give "box_2d": that person's 2D bounding box (normalized 0-1000,
-[y0,x0,y1,x1]) at start_s of that window. Box only, no mask.
+the only identity key. Each frame, ask: 'Is there someone here?' 
+Then 'Is this person the same as an existing one?' 
+If new, create a new person_id and add an entry to "appearances" with the time window 
+(start_s integer seconds). If a person stops being present, then add an entry to "appearances" with the time window 
+(end_s integer seconds). If the person reappears later, add a new entry to "appearances", for the CORRECT person, 
+with the new time  (start_s). If you get to the end of the video and a person is still present, 
+add an entry to "appearances" with the time window (end_s) as the last second of the video.
+For each appearance start_s also give "box_2d": that person's 2D bounding box (normalized 0-1000,
+[y0,x0,y1,x1]). Box only, no mask.
 """
 
 
@@ -59,6 +65,17 @@ def _deterministic_config(cache_name):
     the same answer instead of resampling a different (possibly incomplete)
     account each time."""
     return types.GenerateContentConfig(cached_content=cache_name, temperature=0)
+
+
+def _strip_code_fence(text):
+    """The Pro models wrap the <machine> JSON in a ```json fence even though the
+    prompt asks for bare JSON (Flash did not) -- strip the fence before parsing
+    rather than relying on the model obeying the format instruction."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+        text = text.rpartition("```")[0] if "```" in text else text
+    return text.strip()
 
 
 def _log_response_meta(response, label):
@@ -86,7 +103,13 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
     cache_name = None
     if cache_name_path.exists():
         try:
-            client.caches.get(name=cache_name_path.read_text().strip())
+            # push the expiry back out rather than just checking it exists -- a
+            # reused cache with two minutes left on it dies partway through the
+            # five queries below, which surfaces as a 403 on a later query.
+            client.caches.update(
+                name=cache_name_path.read_text().strip(),
+                config=types.UpdateCachedContentConfig(ttl="3600s"),
+            )
             cache_name = cache_name_path.read_text().strip()
         except Exception:
             cache_name = None  # expired/gone -- fall through and re-cache below
@@ -99,12 +122,15 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
             import time; time.sleep(5)
             myfile = client.files.get(name=myfile.name)
 
-        # Create the cache for 10 mins, just to get the queries done
+        # Create the cache for 1 hour, just to get the queries done. 10 mins was
+        # enough for Flash but the Pro models spend long enough thinking that the
+        # five queries below overrun it and the later ones 403 with
+        # "CachedContent not found". Storage is ~$4.50/1M cached tokens per hour.
         cache = client.caches.create(
-            model="gemini-3.5-flash",
+            model="gemini-3.1-pro-preview",
             config=types.CreateCachedContentConfig(
                 contents=[myfile],
-                ttl="600s", #cache time
+                ttl="3600s", #cache time
             )
         )
         cache_name = cache.name
@@ -115,7 +141,7 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
     FORMAT_SUFFIX = " Format the response as multiple short paragraphs separated by line breaks, not one continuous block of text."
 
     response = client.models.generate_content(
-        model="gemini-3.5-flash",
+        model="gemini-3.1-pro-preview",
         contents="Give a detailed Summary of this video. provide start and end times ." + FORMAT_SUFFIX,
         config=_deterministic_config(cache_name)
     )
@@ -123,7 +149,7 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
     _log_response_meta(response, "summary")
 
     response2 = client.models.generate_content(
-        model="gemini-3.5-flash",
+        model="gemini-3.1-pro-preview",
         contents=f"summary of the video:{response.text} \n\nQuestion:What objects, pertinent to the summary are visible and when? Provde times. don't subdivide the same object into multiple times unless there is a long gap" + FORMAT_SUFFIX,
         config=_deterministic_config(cache_name)
     )
@@ -132,7 +158,7 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
 
 
     response3 = client.models.generate_content(
-        model="gemini-3.5-flash",
+        model="gemini-3.1-pro-preview",
         contents= F"Give a full human voice audio transcript of this video."
         f" make sure you report exactly what the person says, vocalisations should be described e.g, animals noises shoule be miaow, or woof"
         f"**MM:SS** [Speaker]: transcript\n\n"
@@ -143,7 +169,7 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
     _log_response_meta(response3, "transcript")
 
     places = client.models.generate_content(
-            model="gemini-3.5-flash",
+            model="gemini-3.1-pro-preview",
             contents= F"in 2 words, per location, describe the locations in the video. be precise."
             f"word 1 is location category, word 2 is precise location e.g house kitchen / restaurant kitchen / parking-lot apartments /parking-lot multistory "
             f"**MM:SS** : location\n\n"
@@ -155,7 +181,7 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
 
     # --- people + per-appearance box_2d, from the same cached video ---
     people_response = client.models.generate_content(
-        model="gemini-3.5-flash",
+        model="gemini-3.1-pro-preview",
         contents="Identify every distinct person visible in this video." + PEOPLE_SUFFIX,
         config=_deterministic_config(cache_name),
     )
@@ -163,8 +189,13 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
     _log_response_meta(people_response, "people")
     people_raw = people_response.text
     _, _, people_machine_block = people_raw.partition("<machine>")
-    people_json_str = people_machine_block.partition("</machine>")[0].strip()
+    people_json_str = _strip_code_fence(people_machine_block.partition("</machine>")[0])
     people = json.loads(people_json_str)["people"]
+    # zero-pad whatever it actually returned, so "person-2" sorts before "person-10"
+    for person in people:
+        number = re.search(r"\d+", person["person_id"])
+        if number:
+            person["person_id"] = f"person-{int(number.group()):02d}"
 
     # one debug overlay per appearance (not just per person) -- a person can
     # have multiple, possibly non-contiguous, appearance windows and every one
@@ -228,14 +259,14 @@ def query_from_description(operator_prompt, description_path, objects_path, case
 
 
     response = client.models.generate_content(
-        model="gemini-3.5-flash",
+        model="gemini-3.1-pro-preview",
         contents=augmented,
         config=types.GenerateContentConfig(temperature=0)
     )
 
     raw = response.text
     human_text, _, machine_block = raw.partition("<machine>")
-    json_str = machine_block.partition("</machine>")[0].strip() #converts the response to machine readable format
+    json_str = _strip_code_fence(machine_block.partition("</machine>")[0]) #converts the response to machine readable format
     detections = json.loads(json_str)["detections"]
     #saving
     out_dir = case_dir / "012_Gemini_outputs"
@@ -257,7 +288,7 @@ def gemini_cache_video(video_path, query_dir, ttl="600s"):
         myfile = client.files.get(name=myfile.name)
 
     cache = client.caches.create(
-        model="gemini-3.5-flash",
+        model="gemini-3.1-pro-preview",
         config=types.CreateCachedContentConfig(
             contents=[myfile],
             ttl=ttl,
@@ -288,7 +319,7 @@ def gemini_query_CSV_cached(prompt, asset_name, CSV_path, query_dir, extend_ttl=
     FORMAT_PREFIX = "Format your response as multiple short paragraphs separated by line breaks, not one continuous block of text.\n\n"
 
     response = client.models.generate_content(
-        model="gemini-3.5-flash",
+        model="gemini-3.1-pro-preview",
         contents=FORMAT_PREFIX + prompt,
         config=types.GenerateContentConfig(cached_content=cache_name)
     )

@@ -10,13 +10,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from C_CSV_report import add_to_report
-from A_Config import assets_dir, asset_name, case_dir, report_path, to_report_path, sam3_masks_dir
+from C_CSV_report import add_to_asset_list
+from A_Config import assets_dir, asset_name, case_dir, case_name, agent_p_output_dir, report_path, to_report_path, sam3_masks_dir
 from Two2D.B_video_processing import video_fps
-from D_2d_analysis import list_track_id_dirs
 from run_models.A_ROBOFLOW_SAM3 import _slugify_subject
 
 MASK_NAME_FMT = "{:04d}.png"
+CUT_FADE_S = 0.015  # audio ramp on both ends of every clip -- kills cut-point pops
 
 #-------TIMELINE-----------
 
@@ -27,7 +27,7 @@ def video_edit(video_path, start, end, out_path, handles = 1):
     only snap to the nearest keyframe, not the exact requested frame).
     handles is extra padding, in seconds, added onto both the start and the
     end before cutting (e.g. handles=2 -> 2s earlier, 2s later).
-    Also appends the output path to the report CSV.'''
+    Also appends the output path to the asset list CSV.'''
     fps = video_fps(video_path)
     start_s = max(0.0, start / fps - handles)
     end_s   = end / fps + handles
@@ -42,8 +42,19 @@ def video_edit(video_path, start, end, out_path, handles = 1):
         check=True,
     )
 
-    add_to_report({"edited_video": to_report_path(out_path)})
+    add_to_asset_list({"edited_video": to_report_path(out_path)})
     return out_path
+
+
+def mask_frame_range(masks_dir):
+    '''(first_frame, last_frame) that masks_dir actually holds masks for, read
+    off the MASK_NAME_FMT-named PNG filenames -- so callers never have to
+    hard-code a track's span. Raises if the folder holds no frame-numbered
+    PNGs (e.g. it's _id_crops, or the track wrote nothing).'''
+    frames = sorted(int(p.stem) for p in Path(masks_dir).glob("*.png") if p.stem.isdigit())
+    if not frames:
+        raise ValueError(f"No frame-numbered mask PNGs in {masks_dir}.")
+    return frames[0], frames[-1]
 
 
 def _load_mask_bool(mask_dir, frame_idx):
@@ -68,13 +79,132 @@ def apply_mask_overlay(frame_bgr, mask_bool, color=(0, 200, 0), alpha=0.4):
     return out
 
 
+#colour per track, cycled -- distinct enough to tell fragments apart at a glance
+_TRACK_COLORS = [(0, 200, 0), (200, 0, 200), (0, 165, 255), (255, 200, 0),
+                 (0, 0, 255), (255, 0, 128), (0, 255, 255), (128, 0, 255)]
+
+
+def frames_overlay_check(frames_dir, masks_dirs, name=None, review_fps=6, color=None):
+    '''Mask-check video for a MAP beat's SPARSE masks, built from the recon's own
+    frames instead of the source video.
+
+    video_overlay_edit is the wrong tool for these: it cuts the source video from
+    the first to the last masked frame, but frames mode only writes masks on the
+    ~200 frames the recon solved, spread over the whole window. A track with 78
+    masks across 7268 frames comes out as a 4-minute video that is ~99% unmasked --
+    a flicker, not a track. Here every output frame is a recon frame, so every frame
+    carries whatever masks it has and the track is actually readable.
+
+    No audio: the frames are ~1.3s apart in source time, so there is no continuous
+    audio that belongs to them. review_fps is a viewing speed, not real time.
+
+    masks_dirs: one track dir, or several (all of a subject's fragmented tracks) --
+    each gets its own colour, so one video shows how a subject broke up rather than
+    one video per fragment. Dirs holding no frame-numbered PNGs (e.g. _sam_id_shots)
+    are skipped rather than raising.
+
+    Returns the mp4 path.'''
+    from Two2D.B_video_processing import available_frames
+    from A_Config import FRAME_NAME_FMT
+
+    frames_dir = Path(frames_dir)
+    if isinstance(masks_dirs, (str, Path)):
+        masks_dirs = [masks_dirs]
+    # Keep only dirs that actually hold {:04d}.png masks -- _sam_id_shots names its
+    # crops <track>_f<frame>.png, which is what makes mask_frame_range raise.
+    track_dirs = [d for d in (Path(m) for m in masks_dirs)
+                  if d.is_dir() and any(p.stem.isdigit() for p in d.glob("*.png"))]
+    if not track_dirs:
+        raise ValueError(f"No frame-numbered mask PNGs in any of {list(masks_dirs)}.")
+
+    frames = available_frames(frames_dir, FRAME_NAME_FMT)
+    if not frames:
+        raise ValueError(f"No {FRAME_NAME_FMT}-named frames in {frames_dir}.")
+
+    name = name or asset_name()
+    tmp_dir = assets_dir() / f"_{name}_overlay_frames"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    masked_counts = {d.name: 0 for d in track_dirs}
+    try:
+        for out_idx, frame_number in enumerate(frames):
+            img = cv2.imread(str(frames_dir / FRAME_NAME_FMT.format(frame_number)))
+            if img is None:
+                continue
+            for track_idx, track_dir in enumerate(track_dirs):
+                mask = _load_mask_bool(track_dir, frame_number)
+                if mask is None:
+                    continue
+                if mask.shape[:2] != img.shape[:2]:   # masks are written at model res
+                    mask = cv2.resize(mask.astype(np.uint8), (img.shape[1], img.shape[0]),
+                                      interpolation=cv2.INTER_NEAREST_EXACT) > 0
+                img = apply_mask_overlay(
+                    img, mask, color=color or _TRACK_COLORS[track_idx % len(_TRACK_COLORS)])
+                masked_counts[track_dir.name] += 1
+            # stamp the real source frame number -- the only way to tell where you are,
+            # since playback time means nothing on a sparse sequence
+            cv2.putText(img, f"frame {frame_number}", (12, 34),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.imwrite(str(tmp_dir / f"frame_{out_idx:04d}.png"), img)
+
+        out_path = assets_dir() / f"{name}_mask_check.mp4"
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-hide_banner",
+             "-framerate", str(review_fps), "-i", str(tmp_dir / "frame_%04d.png"),
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", str(out_path)],
+            check=True,
+        )
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    total = sum(masked_counts.values())
+    print(f"{out_path.name}: {len(frames)} recon frames, {total} masks "
+          f"({total / len(frames):.0%} of frames carry one)")
+    for track_name, n in sorted(masked_counts.items()):
+        print(f"    {track_name:<28} {n:>4} masks")
+
+    add_to_asset_list({f"mask_check_{name}": to_report_path(out_path)})
+    return out_path
+
+
+def mask_check_map_beats(review_fps=6):
+    '''Mask-check every MAP beat's tracks for the current case -- zero-arg, resolves
+    its own masks and recon frames from A_Config + the paper edit, so it does not
+    depend on any notebook cell having run first.
+
+    One video per (MAP beat, subject) rather than per track: a subject's fragmented
+    tracks share a video, each in its own colour, so you see how it broke up instead
+    of hunting through one clip per fragment. Returns the list of mp4 paths.'''
+    import collections
+    from A_Config import sam3_masks_dir
+    from render_paper_edit import build_recon_requests
+
+    masks_dir = sam3_masks_dir()
+    by_subject = collections.defaultdict(list)
+    for d in sorted(p for p in masks_dir.iterdir() if p.is_dir()):
+        by_subject[d.name.rsplit("-", 1)[0]].append(d)
+
+    out_paths = []
+    for job in build_recon_requests():
+        if job["archetype"] != "MAP":
+            continue
+        for subject, track_dirs in by_subject.items():
+            try:
+                out_paths.append(frames_overlay_check(
+                    job["frames_dir"], track_dirs,
+                    name=f"{job['beat_key']}_{subject}", review_fps=review_fps))
+            except ValueError as exc:
+                print(f"skipped {subject}: {exc}")   # e.g. _sam_id_shots -- no numbered PNGs
+    return out_paths
+
+
 def video_overlay_edit(
         video_path,
-        start,
-        end,
         masks_dir,
-        mask_start,
-        mask_end,
+        start = None,
+        end = None,
+        mask_start = None,
+        mask_end = None,
         handles=1,
         color=(0, 200, 0),
         alpha=0.4,
@@ -89,13 +219,26 @@ def video_overlay_edit(
     to a silent temp video, then muxed with the original video's audio
     (re-clipped to the same range and re-encoded to AAC, same as video_edit)
     in one final ffmpeg pass. Also writes a thumbnail and appends both to
-    the report CSV.
+    the asset list CSV.
 
     name distinguishes the output filename (defaults to asset_name(), the
     original single-output behavior) -- pass a distinct name per call (e.g.
     a track_id) so repeated calls against different masks_dir don't
-    overwrite each other's output.'''
+    overwrite each other's output.
+
+    start/end/mask_start/mask_end all default to the range masks_dir itself
+    covers (mask_frame_range), so the everyday "show me this track" call is
+    just video_overlay_edit(video_path, track_dir, name=...). Pass them
+    explicitly to cut a wider video range than the masks, or to use only part
+    of a track's masks.'''
     name = name or asset_name()
+    if mask_start is None or mask_end is None:
+        first_masked, last_masked = mask_frame_range(masks_dir)
+        mask_start = first_masked if mask_start is None else mask_start
+        mask_end   = last_masked  if mask_end   is None else mask_end
+    start = mask_start if start is None else start
+    end   = mask_end   if end   is None else end
+
     fps = video_fps(video_path)
     start_s = max(0.0, start / fps - handles)
     end_s   = end / fps + handles
@@ -165,7 +308,7 @@ def video_overlay_edit(
     finally:
         os.remove(tmp_silent_path)
 
-    add_to_report({"overlay_mp4": outname, "overlay_mp4_thumb": thumb_name})
+    add_to_asset_list({"overlay_mp4": outname, "overlay_mp4_thumb": thumb_name})
     return outpath
 
 
@@ -192,7 +335,7 @@ def mask_compositor(
 
     Writes every frame in the (handle-padded) range out as a PNG sequence
     under assets_dir()/overlay_frames,  appends the frames
-    folder to the report CSV.'''
+    folder to the asset list CSV.'''
     fps = video_fps(video_path)
 
     handles_frames = round(handles * fps)
@@ -233,7 +376,7 @@ def mask_compositor(
     if written == 0:
         raise ValueError(f"No frames written for [{start_frame}, {end_frame}] in {video_path}.")
 
-    add_to_report({"overlay_frames_dir": to_report_path(out_dir)})
+    add_to_asset_list({"overlay_frames_dir": to_report_path(out_dir)})
     return
 
 
@@ -353,13 +496,25 @@ def _map_mezzanine_clip(beat, type, target_w, target_h, target_fps, out_dir):
     target_fps is also the rate the frames were rendered at -- R_map_animator
     (GOOGLE_MAP) / P_trace_overlayer (BEV_MAP) derive their fps from this same
     source video, so there's no resample here, just a straight read at the
-    rate the frames already are.'''
+    rate the frames already are.
+
+    Each renderer suffixes its frames dir with the beat it rendered for, so a
+    paper edit with two MAP beats gets two distinct animations. Falls back to the
+    unsuffixed folder for cases whose assets predate that.'''
     if type == 'GOOGLE_MAP':
-        frames_dir = assets_dir() / "map_frames"
+        stem = "map_frames"
     elif type == 'BEV_MAP':
-        frames_dir = assets_dir() / "bev_trace_frames"
+        stem = "bev_trace_frames"
     else:
         raise ValueError(f"Unknown map type {type!r} -- expected 'GOOGLE_MAP' or 'BEV_MAP'.")
+
+    beat_frames_dir = assets_dir() / f"{stem}_{beat['beat_id'][0]}"
+    frames_dir = beat_frames_dir if beat_frames_dir.exists() else assets_dir() / stem
+    if not frames_dir.exists():
+        raise FileNotFoundError(
+            f"Beat {beat['beat_id']} wants a {type} clip but neither {beat_frames_dir} "
+            f"nor {assets_dir() / stem} exists -- render the map for this beat first."
+        )
 
     out_path = out_dir / f"beat{beat['order']:02d}_map.mkv"
     subprocess.run(
@@ -375,17 +530,51 @@ def _map_mezzanine_clip(beat, type, target_w, target_h, target_fps, out_dir):
     return out_path
 
 
-def _concat_mezzanine_clips(clip_paths, out_path):
+def _audio_duration(clip_path):
+    '''Length of a mezzanine clip's audio stream, for anchoring its fade-out.
+    FFV1/mkv often reports N/A per-stream, so fall back to the container.'''
+    for entries in ("stream=duration", "format=duration"):
+        probe = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json",
+             "-select_streams", "a:0", "-show_entries", entries, str(clip_path)],
+            capture_output=True, text=True, check=True,
+        )
+        info = json.loads(probe.stdout)
+        value = (info.get("streams") or [{}])[0].get("duration") if "stream" in entries \
+                else info.get("format", {}).get("duration")
+        if value not in (None, "N/A"):
+            return float(value)
+    raise ValueError(f"No audio duration for {clip_path}.")
+
+
+def _concat_mezzanine_clips(clip_paths, out_path, fade_s=CUT_FADE_S):
     '''Single final lossy encode -- reads every lossless mezzanine clip and
     concatenates them via the concat filter (re-encoding once; not the
     stream-copy concat demuxer, which requires byte-identical stream params
     rather than just matching codec/resolution/fps) straight into the
-    delivery mp4.'''
+    delivery mp4.
+
+    Each clip's audio gets a fade_s ramp in and out first. Cutting in silence
+    (find_true_audio_span) makes a boundary quiet, not zero -- room tone still
+    steps discontinuously at the join, and a MAP beat's anullsrc drops to hard
+    digital silence -- so without the ramp the join can pop.'''
     inputs = []
     for p in clip_paths:
         inputs += ["-i", str(p)]
-    filter_parts = "".join(f"[{i}:v:0][{i}:a:0]" for i in range(len(clip_paths)))
-    filter_complex = f"{filter_parts}concat=n={len(clip_paths)}:v=1:a=1[outv][outa]"
+
+    fades, streams = [], []
+    for i, p in enumerate(clip_paths):
+        dur = _audio_duration(p)
+        d = min(fade_s, dur / 3)  # keep in+out clear of each other on a very short beat
+        if d > 0:
+            fades.append(f"[{i}:a:0]afade=t=in:st=0:d={d:.4f},"
+                         f"afade=t=out:st={dur - d:.4f}:d={d:.4f}[a{i}]")
+            streams.append(f"[{i}:v:0][a{i}]")
+        else:
+            streams.append(f"[{i}:v:0][{i}:a:0]")
+
+    concat = f"{''.join(streams)}concat=n={len(clip_paths)}:v=1:a=1[outv][outa]"
+    filter_complex = ";".join([*fades, concat])
     subprocess.run(
         ["ffmpeg", "-y", *inputs,
          "-filter_complex", filter_complex,
@@ -395,13 +584,14 @@ def _concat_mezzanine_clips(clip_paths, out_path):
     )
 
 
-def assemble_paper_edit(video_path):
+def assemble_paper_edit(video_path, analysis_2d_for_decisions=None):
     '''Walks the current case's paper_edit.json beats in order, extracts
     each beat to a lossless mezzanine clip, then concatenates all of them
     with a single final lossy encode into
     assets_dir()/<asset_name>_rough_cut.mp4. See module comment above for
-    what's wired up and the mezzanine/cleanup rationale.'''
-    paper_edit_path = case_dir() / "012_agent_p_output" / f"{case_dir().name}_paper_edit.json"
+    what's wired up and the mezzanine/cleanup rationale.
+    analysis_2d_for_decisions supplies tracked_subject beats' mask dirs.'''
+    paper_edit_path = agent_p_output_dir() / f"{case_name()}_paper_edit.json"
     paper_edit = json.loads(paper_edit_path.read_text(encoding="utf-8"))
     beats = sorted(paper_edit["beats"], key=lambda b: b["order"])
 
@@ -420,13 +610,22 @@ def assemble_paper_edit(video_path):
             if beat.get("tracked_subject"):
                 beat_name = beat["beat_id"][0]
                 print(f"making overlay for beat {beat_name}")
-                # CHANGE THIS TO LOOKUP THE PRODUCER-DESIGNATED SET OF MASKS TO USE HERE, INSTEAD OF ALL
-                # masks stored flat per tracked instance now, not per beat_id or subject
-                # label -- frame filtering happens per-frame in _mask_overlay_mezzanine_clip, not here
-                masks_dirs = [
-                    d for subject in beat["tracked_subject"]
-                    for d in list_track_id_dirs(sam3_masks_dir(), _slugify_subject(subject))
-                ]
+                # Select this beat's instances out of analysis_2d_for_decisions
+                # instead of re-deriving from the subject label -- gem_person_id
+                # entries have no label to slugify. Matched on both beat_ids and the
+                # beat's current tracked_subject, so a subject the Producer dropped
+                # in the revision stays out even if analysis was built from the draft.
+                # from_masks/track_subject_sam3 write masks_dir, gemvsSAM masks_dirs.
+                keys = {s["gem_person_id"] if isinstance(s, dict) else _slugify_subject(s)
+                        for s in beat["tracked_subject"]}
+                masks_dirs = list(dict.fromkeys(
+                    d
+                    for key, entry in (analysis_2d_for_decisions or {}).items()
+                    if isinstance(entry, dict)
+                    and beat_name in (entry.get("beat_ids") or [])
+                    and (key in keys or key.rsplit("-", 1)[0] in keys)
+                    for d in ([entry["masks_dir"]] if entry.get("masks_dir") else entry.get("masks_dirs") or [])
+                ))
                 clip_paths.append(_mask_overlay_mezzanine_clip(
                     video_path, fps, beat["start_frame"], beat["end_frame"],
                     masks_dirs, mezzanine_dir, name=beat_name))
@@ -452,7 +651,7 @@ def assemble_paper_edit(video_path):
         )
     shutil.rmtree(mezzanine_dir)
 
-    add_to_report({"rough_cut_mp4": to_report_path(out_path)})
+    add_to_asset_list({"rough_cut_mp4": to_report_path(out_path)})
     return out_path
 
 
@@ -548,9 +747,9 @@ def find_cut_points(beat, video_path, fps, analysis_2d_for_decisions=None,
                      handle_s=1.5,
                      analysis_margin_s=1.5, noise_db=-20, min_silence_s=0.3):
     '''Finds this beat's actual in/out frames from its rough search window,
-    audio-first (see module comment). Mutates and returns beat; no-op if
-    beat isn't  auto_select -- other beats are someone else's job.'''
-    if beat.get("cut_mode") != "auto_select" or beat.get("auto_select_resolved"):
+    audio-first (see module comment). Mutates and returns beat; no-op on
+    synthetic beats -- they have no footage to cut.'''
+    if beat.get("segment_type") != "real":
         return beat
 
     #if we have masks
@@ -624,7 +823,7 @@ def find_all_cut_points(video_path=None, analysis_2d_for_decisions=None, **kwarg
     finds real in/out frames for every auto_select beat, and rewrites the
     same file in place -- run this before the producer's revision pass, which
     expects auto_select beats already resolved.'''
-    paper_edit_path = case_dir() / "012_agent_p_output" / f"{case_dir().name}_paper_edit_draft.json"
+    paper_edit_path = agent_p_output_dir() / f"{case_name()}_paper_edit_draft.json"
     paper_edit = json.loads(paper_edit_path.read_text(encoding="utf-8"))
 
     if video_path is None:

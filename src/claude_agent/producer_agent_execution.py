@@ -14,18 +14,17 @@ from claude_agent_sdk import (
     ThinkingConfigEnabled,
     ToolUseBlock,
 )
-from A_Config import case_dir , REPO_ROOT, case_name
-out_dir = case_dir() / "012_agent_p_output"
-print(out_dir)
+from A_Config import REPO_ROOT, case_name, query_dir, agent_p_output_dir, to_repo_path
 PROJECT_ROOT = REPO_ROOT
 # cwd must be the repo root (where .claude/ lives) -- Claude Code resolves
 # every relative tool path against the project root it finds by walking up
 # from cwd, NOT against the literal cwd itself. Setting cwd to Data/ here
 # previously caused it to still resolve against the repo root one level up
 # (where .claude/agents/producer.md lives), silently dropping "Data" from
-# every write path. producer.md's own instructions now say to write to
-# "Data/{CASE_NAME}/012_agent_p_output/" (relative to this root), matching
-# where Data/<case_name>/012_agent_p_output already lives on disk.
+# every write path. producer.md no longer names the folder at all -- each
+# prompt carries OUTPUT_DIR, built by to_repo_path(agent_p_output_dir()), so
+# the path the agent writes to and the path this module later globs are the
+# same A_Config getter and cannot drift (including its experiment subfolder).
 from constitution_view import producer_constitution
 
 def _make_logger():
@@ -47,6 +46,10 @@ async def _run_producer_agent_async(task_prompt: str, log):
 
     #constitution = Path(PROJECT_ROOT, "CONSTITUTION.md").read_text(encoding="utf-8")
     system_prompt = f"{producer_instructions}\n\n# CONSTITUTION (read this before drafting anything)\n{constitution}"
+
+    # Write creates parents on its own, but pre-creating means a run where the
+    # agent wrote nowhere fails as an empty glob below, not FileNotFoundError here.
+    agent_p_output_dir().mkdir(parents=True, exist_ok=True)
 
     final_text = ""
     files_written = []
@@ -152,7 +155,7 @@ def run_producer_agent(task_prompt: str, mode: str = "revision"):
     for f in files_written:
         print(" ", f)
 
-    out_dir = case_dir() / "012_agent_p_output"
+    out_dir = agent_p_output_dir()
     print(out_dir)
     # Producer writes ONE file — the paper-edit JSON. Everything downstream
     # (flags dict, HTML) is derived from it deterministically, no model involved,
@@ -174,17 +177,19 @@ def run_producer_agent(task_prompt: str, mode: str = "revision"):
     return paper_edit_json_path
 
 def build_producer_prompt_draft1(brief: str, analysis_2d_for_decisions: dict, producer_flags: dict) -> str:
-    query_dir = case_dir() / "012_Gemini_outputs"
-    description_text = (query_dir / f"{case_name()}_description.txt").read_text(encoding="utf-8")
-    objects_text = (query_dir / f"{case_name()}_objects.txt").read_text(encoding="utf-8")
-    transcript_text = (query_dir / f"{case_name()}_transcript_full.txt").read_text(encoding="utf-8")
-    places_text  =   (query_dir / f"{case_name()}_places.txt").read_text(encoding="utf-8")                                                                        
-    source_text = f"DESCRIPTION\n{description_text}\nOBJECTS\n{objects_text}\nAUDIO TRANSCRIPT\n{transcript_text}\nPLACES{places_text}"
+    description_text = (query_dir() / f"{case_name()}_description.txt").read_text(encoding="utf-8")
+    objects_text = (query_dir() / f"{case_name()}_objects.txt").read_text(encoding="utf-8")
+    transcript_text = (query_dir() / f"{case_name()}_transcript_full.txt").read_text(encoding="utf-8")
+    places_text  =   (query_dir() / f"{case_name()}_places.txt").read_text(encoding="utf-8")
+    people_text  =   (query_dir() / f"{case_name()}_people.json").read_text(encoding="utf-8")
+    source_text = f"DESCRIPTION\n{description_text}\nOBJECTS\n{objects_text}\nAUDIO TRANSCRIPT\n{transcript_text}\nPLACES{places_text}\nPEOPLE\n{people_text}"
 
     return f"""
             MODE: draft
 
             CASE_NAME: {case_name()}
+
+            OUTPUT_DIR: {to_repo_path(agent_p_output_dir())}
 
             BRIEF:
             {brief}         
@@ -203,18 +208,20 @@ def build_producer_prompt_draft1(brief: str, analysis_2d_for_decisions: dict, pr
             """
 
 def build_producer_prompt_draft2(brief: str, analysis_2d_for_decisions: dict, producer_flags: dict) -> str:
-    query_dir = case_dir() / "012_Gemini_outputs"
-    description_text = (query_dir / f"{case_name()}_description.txt").read_text(encoding="utf-8")
-    objects_text = (query_dir / f"{case_name()}_objects.txt").read_text(encoding="utf-8")
-    transcript_text = (query_dir / f"{case_name()}_transcript_full.txt").read_text(encoding="utf-8")
-    places_text  =   (query_dir / f"{case_name()}_places.txt").read_text(encoding="utf-8")                                                                        
-    source_text = f"DESCRIPTION\n{description_text}\nOBJECTS\n{objects_text}\nAUDIO TRANSCRIPT\n{transcript_text}\nPLACES{places_text}"
-    draft_paper_edit_text = (case_dir() / "012_agent_p_output" / f"{case_name()}_paper_edit_draft.json").read_text(encoding="utf-8")
-    assistant_feedback  =  (case_dir() / "012_agent_p_output" / f"{case_name()}_draft_ast_fb.json").read_text(encoding="utf-8")
+    description_text = (query_dir() / f"{case_name()}_description.txt").read_text(encoding="utf-8")
+    objects_text = (query_dir() / f"{case_name()}_objects.txt").read_text(encoding="utf-8")
+    transcript_text = (query_dir() / f"{case_name()}_transcript_full.txt").read_text(encoding="utf-8")
+    places_text  =   (query_dir() / f"{case_name()}_places.txt").read_text(encoding="utf-8")
+    people_text  =   (query_dir() / f"{case_name()}_people.json").read_text(encoding="utf-8")
+    source_text = f"DESCRIPTION\n{description_text}\nOBJECTS\n{objects_text}\nAUDIO TRANSCRIPT\n{transcript_text}\nPLACES{places_text}\nPEOPLE\n{people_text}"
+    draft_paper_edit_text = (agent_p_output_dir() / f"{case_name()}_paper_edit_draft.json").read_text(encoding="utf-8")
+    assistant_feedback  =  (agent_p_output_dir() / f"{case_name()}_draft_ast_fb.json").read_text(encoding="utf-8")
     return f"""
             MODE: draft
 
             CASE_NAME: {case_name()}
+
+            OUTPUT_DIR: {to_repo_path(agent_p_output_dir())}
 
             BRIEF:
             {brief}        
@@ -238,18 +245,20 @@ def build_producer_prompt_draft2(brief: str, analysis_2d_for_decisions: dict, pr
             """
 
 def build_producer_prompt_revision(brief: str, analysis_2d_for_decisions: dict, producer_flags: dict) -> str:
-    query_dir = case_dir() / "012_Gemini_outputs"
-    description_text = (query_dir / f"{case_name()}_description.txt").read_text(encoding="utf-8")
-    objects_text = (query_dir / f"{case_name()}_objects.txt").read_text(encoding="utf-8")
-    transcript_text = (query_dir / f"{case_name()}_transcript_full.txt").read_text(encoding="utf-8")
-    places_text  =   (query_dir / f"{case_name()}_places.txt").read_text(encoding="utf-8")                                                                        
-    source_text = f"DESCRIPTION\n{description_text}\nOBJECTS\n{objects_text}\nAUDIO TRANSCRIPT\n{transcript_text}\nPLACES{places_text}"
-    draft_paper_edit_text = (case_dir() / "012_agent_p_output" / f"{case_name()}_paper_edit_draft.json").read_text(encoding="utf-8")
+    description_text = (query_dir() / f"{case_name()}_description.txt").read_text(encoding="utf-8")
+    objects_text = (query_dir() / f"{case_name()}_objects.txt").read_text(encoding="utf-8")
+    transcript_text = (query_dir() / f"{case_name()}_transcript_full.txt").read_text(encoding="utf-8")
+    places_text  =   (query_dir() / f"{case_name()}_places.txt").read_text(encoding="utf-8")
+    people_text  =   (query_dir() / f"{case_name()}_people.json").read_text(encoding="utf-8")
+    source_text = f"DESCRIPTION\n{description_text}\nOBJECTS\n{objects_text}\nAUDIO TRANSCRIPT\n{transcript_text}\nPLACES{places_text}\nPEOPLE\n{people_text}"
+    draft_paper_edit_text = (agent_p_output_dir() / f"{case_name()}_paper_edit_draft.json").read_text(encoding="utf-8")
 
     return f"""
             MODE: revision
 
             CASE_NAME: {case_name()}
+
+            OUTPUT_DIR: {to_repo_path(agent_p_output_dir())}
 
             BRIEF:
             {brief}

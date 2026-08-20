@@ -1,6 +1,5 @@
 """Matches GEMINI'S people.json person_id -> SAM3 detection by box overlap (not seeding)."""
 
-import ast
 import csv
 import json
 from pathlib import Path
@@ -13,23 +12,14 @@ def gem_box_to_xyxy(gem_box, width, height):
     return (x0, y0, x1, y1)
 
 
-def sam_det_to_xyxy(sam_det):
-    """Roboflow's standard detection shape is center-based (x, y, width,
-    height); fall back to the bounding box of the mask polygon ("points")
-    if those fields aren't present."""
-    if all(k in sam_det and sam_det[k] not in (None, "") for k in ("x", "y", "width", "height")):
-        x, y, w, h = (float(sam_det["x"]), float(sam_det["y"]), float(sam_det["width"]), float(sam_det["height"]))
-        return (x - w / 2, y - h / 2, x + w / 2, y + h / 2)
-
-    points = sam_det.get("points")
-    if points:
-        if isinstance(points, str):
-            points = ast.literal_eval(points)
-        xs = [p["x"] for p in points]
-        ys = [p["y"] for p in points]
-        return (min(xs), min(ys), max(xs), max(ys))
-
-    return None
+def sam_det_to_xyxy(sam_det, vid_w, vid_h):
+    """A_LOCAL_SAM3's detections.csv box_xywh is corner-based (x, y = top-left),
+    normalized 0-1 (sam3_video_inference.py divides by W_video/H_video before
+    returning out_boxes_xywh -- A_LOCAL_SAM3.py writes that straight to CSV,
+    never converted back to pixels)."""
+    x, y, w, h = (float(sam_det["x"]) * vid_w, float(sam_det["y"]) * vid_h,
+                  float(sam_det["w"]) * vid_w, float(sam_det["h"]) * vid_h)
+    return (x, y, x + w, y + h)
 
 
 def iou_xyxy(box_a, box_b):
@@ -62,11 +52,11 @@ def load_SAM_dets(raw_detection_rows=None, SAM_dets_path=None):
 def gem_person_targets_lookup(fps, paper_edit_json_path=None, gem_people_json_path=None):
     """gem_person_id -> {appearance_targets: [{box_2d, target_frame}, ...], beat_ids}.
     Matching-candidates only -- the eventual analysis_2d_for_decisions entry
-    is still built from frames_by_instance once matching resolves a tracker_id."""
+    is still built from frames_by_instance once matching resolves a track_id."""
     if paper_edit_json_path is None or gem_people_json_path is None:
         import A_Config
         if paper_edit_json_path is None:
-            paper_edit_json_path = A_Config.case_dir() / "012_agent_p_output" / f"{A_Config.case_name()}_paper_edit_draft.json"
+            paper_edit_json_path = A_Config.agent_p_output_dir() / f"{A_Config.case_name()}_paper_edit_draft.json"
         if gem_people_json_path is None:
             gem_people_json_path = A_Config.query_dir() / f"{A_Config.case_name()}_people.json"
 
@@ -102,10 +92,10 @@ def gem_person_targets_lookup(fps, paper_edit_json_path=None, gem_people_json_pa
 
 
 def match_gem_people_to_sam(vid_w=None, vid_h=None, fps=None, gem_person_targets=None, SAM_dets=None, iou_threshold=0.1):
-    """gem_person_id -> sorted list of matched sam_tracker_id (one to many --
+    """gem_person_id -> sorted list of matched track_id (one to many --
     different appearances can land in different spans, where SAM3's
-    tracker_id numbering restarts, so the same person legitimately matches
-    more than one tracker_id across the whole case)."""
+    track_id numbering restarts, so the same person legitimately
+    matches more than one track_id across the whole case)."""
     if vid_w is None or vid_h is None or fps is None:
         import A_Config
         from Two2D.B_video_processing import video_dims
@@ -118,23 +108,24 @@ def match_gem_people_to_sam(vid_w=None, vid_h=None, fps=None, gem_person_targets
 
     results = {}
     for gem_person_id, target in gem_person_targets.items():
-        matched_tracker_ids = set()
+        matched_track_ids = set()
         for appearance_target in target["appearance_targets"]:
             target_frame = appearance_target["target_frame"]
             sam_fr_dets = [d for d in SAM_dets if int(float(d["frame_idx"])) == target_frame]
             target_box = gem_box_to_xyxy(appearance_target["box_2d"], vid_w, vid_h)
 
-            best_tracker_id, best_iou = None, 0.0
+            best_track_id, best_iou = None, 0.0
             for sam_det in sam_fr_dets:
-                sam_box = sam_det_to_xyxy(sam_det)
-                if sam_box is None:
-                    continue
-                iou = iou_xyxy(target_box, sam_box)
+                iou = iou_xyxy(target_box, sam_det_to_xyxy(sam_det, vid_w, vid_h))
                 if iou > best_iou:
-                    best_tracker_id, best_iou = sam_det["tracker_id"], iou
+                    best_track_id, best_iou = int(sam_det["track_id"]), iou
             if best_iou >= iou_threshold:
-                matched_tracker_ids.add(best_tracker_id)
+                matched_track_ids.add(best_track_id)
 
-        results[gem_person_id] = sorted(matched_tracker_ids)
+        results[gem_person_id] = sorted(matched_track_ids)
+        if not results[gem_person_id]:
+            # silent here means the person vanishes from analysis_2d_for_decisions
+            # entirely (empty masks_dirs, empty Subject_frames_present) -- say so.
+            print(f"No SAM track matched {gem_person_id} -- check iou_threshold={iou_threshold}.")
 
     return results

@@ -11,6 +11,7 @@ as a "points" polygon outline (bbox + points), never RLE -- see
 decode_mask_from_detection.
 """
 
+import bisect
 import logging
 import os
 import re
@@ -25,6 +26,10 @@ from dotenv import load_dotenv
 
 from inference_sdk import InferenceHTTPClient
 from inference_sdk.webrtc import VideoFileSource, StreamConfig
+# NB: A_LOCAL_SAM3 is deliberately NOT imported here. It imports make_span_clip
+# and friends back out of this module, so a module-level import either way round
+# is circular. _dispatch_sam3_tracking imports it inside the function instead,
+# which also keeps torch off the import path when running against Roboflow.
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
@@ -35,6 +40,12 @@ logging.getLogger("inference_sdk").setLevel(logging.WARNING)
 WORKSPACE = "david-barker-25-ucl-ac-uk"
 WORKFLOW = "sam3-prompted-video-tracker-1784979867494"
 MASK_NAME_FMT = "{:04d}.png"  # matches A_YOLO_seg / W_video_editor's convention
+
+# Which SAM3 backend track_subject_sam3/run_sam3_manual dispatch to: the local
+# on-GPU model in Models/sam3 (A_LOCAL_SAM3) or Roboflow's hosted workflow.
+# Everything below this line is the Roboflow path and is left intact as the
+# fallback -- set this False to go straight back to it, nothing else changes.
+USE_LOCAL_SAM3 = True
 
 # Roboflow's serverless WebRTC worker-init endpoint is flaky (read timeouts,
 # intermittent 500s) independent of region/plan -- retry session setup rather
@@ -105,6 +116,51 @@ def find_preceding_keyframe_s(video_path, target_s, initial_window_s=20.0, max_w
         window_s *= 2
 
 
+_FRAME_PTS_CACHE = {}
+
+
+def frame_pts_times(video_path):
+    """
+    Every video frame's presentation timestamp (seconds), in frame order --
+    i.e. frame N of a sequential cap.read() pass has pts frame_pts_times()[N].
+
+    Read from the container's packets (demux only, no decode: ~1s for a
+    4-minute file) and cached per (path, mtime, size).
+    """
+    video_path = Path(video_path)
+    stat = video_path.stat()
+    key = (str(video_path.resolve()), stat.st_mtime_ns, stat.st_size)
+    if key not in _FRAME_PTS_CACHE:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "packet=pts_time", "-of", "csv=p=0", str(video_path)],
+            capture_output=True, text=True, check=True,
+        )
+        # B-frames make packet order != presentation order, hence the sort.
+        _FRAME_PTS_CACHE[key] = sorted(
+            float(field)
+            for field in result.stdout.replace(",", "\n").split()
+            if field not in ("", "N/A")
+        )
+    return _FRAME_PTS_CACHE[key]
+
+
+def frame_index_at_time(video_path, t_s):
+    """
+    The 0-based frame number a sequential decode of video_path reaches at
+    timestamp t_s -- i.e. the index W_video_editor's overlay loop and the
+    MASK_NAME_FMT mask filenames both count in.
+
+    Counts real frames rather than multiplying by an fps, because phone
+    footage is routinely VFR: this file reports r_frame_rate 30 but
+    avg_frame_rate 29.9726, and neither converts times to frame numbers
+    correctly (measured error up to 8 frames, varying along the file --
+    which lands a mask on the wrong frame entirely).
+    """
+    pts = frame_pts_times(video_path)
+    return max(0, bisect.bisect_left(pts, t_s - 1e-6))
+
+
 def make_span_clip(video_path, out_path, start_s, end_s):
     """
     Creates a temporary video containing only [start_s, end_s], using ffmpeg
@@ -114,6 +170,11 @@ def make_span_clip(video_path, out_path, start_s, end_s):
     ffmpeg will snap to (find_preceding_keyframe_s) and use THAT as the true
     clip start -- rather than assuming the clip starts exactly at start_s,
     which would silently offset every downstream frame number.
+
+    That keyframe time is turned into a frame number by counting frames
+    (frame_index_at_time), NOT by multiplying by fps -- see that function:
+    time * fps put every mask up to 8 frames away from the frame it was
+    traced on.
 
     Returns:
       original_start_frame, fps, width, height
@@ -142,7 +203,7 @@ def make_span_clip(video_path, out_path, start_s, end_s):
         check=True,
     )
 
-    start_frame = max(0, int(round(actual_start_s * fps)))
+    start_frame = frame_index_at_time(video_path, actual_start_s)
 
     return start_frame, fps, width, height
 
@@ -223,35 +284,58 @@ def _slugify_subject(subject):
     return slug or "subject"
 
 
+def _dispatch_sam3_tracking(*args, **kwargs):
+    """
+    Routes to whichever backend USE_LOCAL_SAM3 selects. Both sides take the
+    same arguments and return the same analysis_2d_for_decisions shape, so
+    callers of track_subject_sam3/run_sam3_manual don't change either way.
+    The local import keeps torch/SAM3 off the import path when running
+    against Roboflow.
+    """
+    if USE_LOCAL_SAM3:
+        try:
+            # How the rest of src/ imports this package (see D_2d_analysis,
+            # Two2D/W_video_editor); the notebook only puts src/ on sys.path.
+            from run_models.A_LOCAL_SAM3 import _run_sam3_tracking_local
+        except ModuleNotFoundError:
+            # How the spike scripts import it, running from inside run_models/.
+            from A_LOCAL_SAM3 import _run_sam3_tracking_local
+        return _run_sam3_tracking_local(*args, **kwargs)
+    return _run_sam3_tracking(*args, **kwargs)
+
+
 def track_subject_sam3(video_path, threshold=0.5,
                         requested_region="us", requested_plan="webrtc-gpu-large"):
     import json
     import sys
     from collections import defaultdict
-    from A_Config import REPO_ROOT, case_dir, case_name
-
+    from A_Config import REPO_ROOT, case_name, agent_p_output_dir
+    print("here")
     sys.path.insert(0, str(Path(REPO_ROOT) / "src" / "claude_agent"))
     #-------------------get data----------------
     print("accessing data")
     from render_paper_edit import build_tracking_requests
 
-    paper_edit_json_path = case_dir() / "012_agent_p_output" / f"{case_name()}_paper_edit_draft.json"
+    paper_edit_json_path = agent_p_output_dir() / f"{case_name()}_paper_edit_draft.json"
 
     flags_path = paper_edit_json_path.with_name(
         paper_edit_json_path.stem.replace("_paper_edit", "") + "_flags.json"
     )
     current_flags = json.loads(flags_path.read_text(encoding="utf-8"))
     
+
     cap = cv2.VideoCapture(str(video_path))
     fps = cap.get(cv2.CAP_PROP_FPS)
     cap.release()
-
+    
     tracking_requests = build_tracking_requests(paper_edit_json_path, fps)
+    
     tracking_requests_by_subject = defaultdict(list)
+    print(tracking_requests_by_subject)
     for request in tracking_requests:
         tracking_requests_by_subject[request["subject"]].append(request)
 
-    return _run_sam3_tracking(video_path, tracking_requests_by_subject, threshold, requested_region, requested_plan)
+    return _dispatch_sam3_tracking(video_path, tracking_requests_by_subject, threshold, requested_region, requested_plan)
 
 
 def run_sam3_manual(video_path, subject, start_frame=None, end_frame=None,
@@ -277,7 +361,7 @@ def run_sam3_manual(video_path, subject, start_frame=None, end_frame=None,
 
     tracking_requests_by_subject = {subject: [{"subject": subject, "start_s": start_s, "end_s": end_s}]}
 
-    return _run_sam3_tracking(video_path, tracking_requests_by_subject, threshold, requested_region, requested_plan)
+    return _dispatch_sam3_tracking(video_path, tracking_requests_by_subject, threshold, requested_region, requested_plan)
 
 
 def _run_sam3_tracking(video_path, tracking_requests_by_subject, threshold, requested_region, requested_plan):
@@ -286,13 +370,12 @@ def _run_sam3_tracking(video_path, tracking_requests_by_subject, threshold, requ
     {subject: [{"subject","start_s","end_s"}, ...]}, cuts a subclip per
     span, streams each through SAM3, writes masks, and returns
     analysis_2d_for_decisions keyed by tracked instance ("{subject_slug}-
-    {instance_num}", e.g. "police-1", "police-2") -- a subject label can
+    {track_id}", e.g. "police-1", "police-2") -- a subject label can
     resolve to multiple distinct tracked instances, and each gets its own
     flat masks_dir folder and its own dict entry, not merged into one
     per-label entry (see build_tracking_requests/D_2d_analysis).
     """
     from A_Config import sam3_masks_dir
-    from C_CSV_report import add_to_report
     from D_2d_analysis import contiguous_durations
 
     print("initialising tracking")
@@ -307,10 +390,10 @@ def _run_sam3_tracking(video_path, tracking_requests_by_subject, threshold, requ
 
     for subject, requests in tracking_requests_by_subject.items():
         subject_slug = _slugify_subject(subject)
-        frames_by_instance = {}  # global instance_num -> [frame_idx, ...]
-        beat_ids_by_instance = {}  # global instance_num -> set(beat_id)
+        frames_by_instance = {}  # global track_id -> [frame_idx, ...]
+        beat_ids_by_instance = {}  # global track_id -> set(beat_id)
         subject_beat_ids = set()  # union across all this subject's requests, for the no-detection case
-        next_instance_num = [1]  # mutable cell so on_data's closure can bump it
+        next_track_id = [1]  # mutable cell so on_data's closure can bump it
 
         for request in requests:
             span_start_s = request["start_s"]
@@ -336,7 +419,7 @@ def _run_sam3_tracking(video_path, tracking_requests_by_subject, threshold, requ
             # would silently overwrite span 1's "instance 1" on disk.
             local_to_global = {}
             for attempt in range(1, SAM3_SESSION_MAX_ATTEMPTS + 1):
-                attempt_frames = {}  # global instance_num -> [frame_idx, ...]
+                attempt_frames = {}  # global track_id -> [frame_idx, ...]
                 try:
                     with client.webrtc.stream(
                         source=source, workflow=WORKFLOW, workspace=WORKSPACE,
@@ -347,7 +430,7 @@ def _run_sam3_tracking(video_path, tracking_requests_by_subject, threshold, requ
                         def on_data(data, metadata, start_frame=start_frame, width=width, height=height,
                                     masks_root=masks_root, attempt_frames=attempt_frames,
                                     subject_slug=subject_slug, local_to_global=local_to_global,
-                                    next_instance_num=next_instance_num,
+                                    next_track_id=next_track_id,
                                     raw_detection_rows=raw_detection_rows, _debug_count=[0]):
                             frame_idx = start_frame + int(metadata.frame_id) - 1
                             dets = unwrap_predictions(data.get("predictions"))
@@ -364,14 +447,14 @@ def _run_sam3_tracking(video_path, tracking_requests_by_subject, threshold, requ
                                 if mask is not None:
                                     local_id = extract_track_id(d)
                                     if local_id not in local_to_global:
-                                        local_to_global[local_id] = next_instance_num[0]
-                                        next_instance_num[0] += 1
-                                    instance_num = local_to_global[local_id]
+                                        local_to_global[local_id] = next_track_id[0]
+                                        next_track_id[0] += 1
+                                    track_id = local_to_global[local_id]
 
-                                    track_id_dir = masks_root / f"{subject_slug}-{instance_num}"
+                                    track_id_dir = masks_root / f"{subject_slug}-{track_id:02d}"
                                     track_id_dir.mkdir(parents=True, exist_ok=True)
                                     cv2.imwrite(str(track_id_dir / MASK_NAME_FMT.format(frame_idx)), mask)
-                                    attempt_frames.setdefault(instance_num, []).append(frame_idx)
+                                    attempt_frames.setdefault(track_id, []).append(frame_idx)
                                     n_instances += 1
 
                         session.run()
@@ -383,15 +466,15 @@ def _run_sam3_tracking(video_path, tracking_requests_by_subject, threshold, requ
                     time.sleep(SAM3_SESSION_RETRY_BACKOFF_S)
                     continue
                 else:
-                    for instance_num, frames in attempt_frames.items():
-                        frames_by_instance.setdefault(instance_num, []).extend(frames)
-                        beat_ids_by_instance.setdefault(instance_num, set()).update(request_beat_ids)
+                    for track_id, frames in attempt_frames.items():
+                        frames_by_instance.setdefault(track_id, []).extend(frames)
+                        beat_ids_by_instance.setdefault(track_id, set()).update(request_beat_ids)
                     break
             tmp_clip.unlink(missing_ok=True)
 
         if frames_by_instance:
-            for instance_num, instance_frames in frames_by_instance.items():
-                instance_key = f"{subject_slug}-{instance_num}"
+            for track_id, instance_frames in frames_by_instance.items():
+                instance_key = f"{subject_slug}-{track_id:02d}"
                 seqs, best_idx = contiguous_durations(instance_frames, tolerance=15)
                 entry = {
                     "Subject_frames_present": instance_frames,
@@ -401,13 +484,9 @@ def _run_sam3_tracking(video_path, tracking_requests_by_subject, threshold, requ
                     "continuous frame sequences": seqs,
                     "best_seq_idx": best_idx,
                     "masks_dir": str(masks_root / instance_key),
-                    "beat_ids": sorted(beat_ids_by_instance.get(instance_num, set())),
+                    "beat_ids": sorted(beat_ids_by_instance.get(track_id, set())),
                 }
                 analysis_2d_for_decisions[instance_key] = entry
-                add_to_report({
-                    f"{instance_key}_subject_first_frame": entry["subject_first_frame"],
-                    f"{instance_key}_subject_last_frame": entry["subject_last_frame"],
-                })
         else:
             print(f"[{subject_slug}] no detections across any requested span")
             entry = {
@@ -420,10 +499,6 @@ def _run_sam3_tracking(video_path, tracking_requests_by_subject, threshold, requ
                 "beat_ids": sorted(subject_beat_ids),
             }
             analysis_2d_for_decisions[subject_slug] = entry
-            add_to_report({
-                f"{subject_slug}_subject_first_frame": entry["subject_first_frame"],
-                f"{subject_slug}_subject_last_frame": entry["subject_last_frame"],
-            })
 
     if raw_detection_rows:
         pd.DataFrame(raw_detection_rows).to_csv(masks_root / "detections.csv", index=False)

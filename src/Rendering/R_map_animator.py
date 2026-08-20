@@ -27,8 +27,8 @@ from pathlib import Path
 
 import json
 
-from C_CSV_report import add_to_report
-from A_Config import report_path, asset_name, assets_dir, case_dir, to_report_path
+from C_CSV_report import add_to_asset_list
+from A_Config import report_path, asset_name, assets_dir, case_dir, case_name, agent_p_output_dir, to_report_path
 from Two2D.B_video_processing import video_fps
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -241,7 +241,8 @@ def main(
     gif           = None,
     mp4           = None,
     fps           = None,
-    manual        =False
+    manual        =False,
+    beat          = None,
 
 
 ):
@@ -260,7 +261,14 @@ def main(
     Per-trace style keys: trail_color, trail_width, trail_opacity,
                           dot_radius, dot_opacity
     Omit any key to inherit the top-level default.
+
+    beat: the Producer MAP beat this map is for, when the paper edit has more than
+    one. Its beat_id suffixes every output (svg, frames dir, gif/mp4, asset-list
+    keys) so two MAP beats don't overwrite each other. None keeps the single-map
+    behaviour -- first MAP beat in the paper edit, unsuffixed output names.
     """
+    _beat_key      = beat["beat_id"][0] if beat else None
+    _suffix        = f"_{_beat_key}" if _beat_key else ""
     _map_size      = map_size
     _map_scale     = map_scale
     _map_type      = map_type
@@ -270,16 +278,20 @@ def main(
     _trail_opacity = trail_opacity
     _dot_radius    = dot_radius    if dot_radius   is not None else map_size * 0.010
     _dot_opacity   = dot_opacity
-    _output        = assets_dir() / f"{asset_name()}_map.svg"
+    _output        = assets_dir() / f"{asset_name()}_map{_suffix}.svg"
 
     if manual ==False:
         # Duration comes from the Producer's own MAP beat, not a caller-supplied
-        # value -- it's a fixed editorial decision for the current case, read at
-        # call time (not eagerly, since the Producer may not have written this
-        # beat yet when the notebook's config cell runs).
-        paper_edit_path = case_dir() / "012_agent_p_output" / f"{case_dir().name}_paper_edit.json"
-        paper_edit = json.loads(paper_edit_path.read_text(encoding="utf-8"))
-        map_beat = next(b for b in paper_edit["beats"] if b["archetype"] == "MAP")
+        # value -- it's a fixed editorial decision for the current case. When the
+        # caller named the beat we already have it; otherwise fall back to the first
+        # MAP beat in the paper edit, read at call time (not eagerly, since the
+        # Producer may not have written this beat yet when the notebook's config
+        # cell runs).
+        map_beat = beat
+        if map_beat is None:
+            paper_edit_path = agent_p_output_dir() / f"{case_name()}_paper_edit.json"
+            paper_edit = json.loads(paper_edit_path.read_text(encoding="utf-8"))
+            map_beat = next(b for b in paper_edit["beats"] if b["archetype"] == "MAP")
         _duration = map_beat["duration_seconds"]
 
     else:
@@ -454,25 +466,28 @@ def main(
     print("Rendering frames...")
     frames = render_frames(png_bytes, trace_data, _map_size, _duration, _fps)
 
-    frames_dir = assets_dir() / "map_frames"
+    frames_dir = assets_dir() / f"map_frames{_suffix}"
     frames_dir.mkdir(parents=True, exist_ok=True)
     for fi, img in enumerate(frames):
         img.save(frames_dir / f"frame_{fi:04d}.png")
     print(f"Written: {frames_dir}  ({len(frames)} frame PNGs)")
 
     if gif:
-        gif_path = assets_dir() / f"{asset_name()}_map.gif"
+        gif_path = assets_dir() / f"{asset_name()}_map{_suffix}.gif"
         export_gif(frames, gif_path, _fps)
     if mp4:
-        mp4_path = assets_dir() / f"{asset_name()}_map.mp4"
+        mp4_path = assets_dir() / f"{asset_name()}_map{_suffix}.mp4"
         export_mp4(frames, mp4_path, _fps)
 
-    for_report = {"map_svg": to_report_path(_output), "map_frames_dir": to_report_path(frames_dir)}
+    # Asset-list rows are overwrite-by-key (C_CSV_report._add_rows), so a second
+    # MAP beat would replace the first's row without the beat suffix here.
+    for_report = {f"map_svg{_suffix}": to_report_path(_output),
+                  f"map_frames_dir{_suffix}": to_report_path(frames_dir)}
     if gif:
-        for_report["map_gif"] = to_report_path(gif_path)
+        for_report[f"map_gif{_suffix}"] = to_report_path(gif_path)
     if mp4:
-        for_report["map_mp4"] = to_report_path(mp4_path)
-    add_to_report(for_report)
+        for_report[f"map_mp4{_suffix}"] = to_report_path(mp4_path)
+    add_to_asset_list(for_report)
 
 
 if __name__ == "__main__":

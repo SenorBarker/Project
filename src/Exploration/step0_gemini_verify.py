@@ -135,7 +135,7 @@ if people:
     #get 25 frames per person, 
     target_times_s = [person["appearances"][0]["start_s"] + i / N
                        for person in people for i in range(N)]
-    all_frames = frames_at_times(VIDEO_PATH, target_times_s)
+    all_frames, _ = frames_at_times(VIDEO_PATH, target_times_s)
     for p_idx, person in enumerate(people):
         person_id = person["person_id"]
         box = get_box(person["appearances"][0])

@@ -13,6 +13,7 @@ import cv2
 import numpy as np
 import torch
 from ultralytics import YOLO
+from Two2D.B_video_processing import seek_exact
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -29,7 +30,8 @@ def _get_subject_ids(model, subjects):
 
 
 def _detect_in_frame(model, cap, frame_idx, subject_ids, h, w, conf):
-    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+    if not seek_exact(cap, frame_idx):
+        return False
     ret, frame = cap.read()
     if not ret:
         return False
@@ -74,7 +76,7 @@ def _run_tracking(model, cap, out_dir, subject_ids, h, w,
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    seek_exact(cap, start_frame)
 
 
 

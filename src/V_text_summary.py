@@ -13,7 +13,7 @@ def gemini_final_report():
     event_descrption_prompt = (
             F" Read the CSV first, these are measurements "
             f"'''csv\n{csv_text}\n```\n\n"
-        f" The <<subject>> is the main focus, so base the report on thi. the subject has a mask on it to help the viewer see it."
+        f" The <<subject>> is the main focus, so base the report on this. Look for green highlights/masks and focus on those if you see them, explictly mention them."
         f"give a 1 sentence exatablisher that gives location, time and date"
         f" then give details on the <<subject>>"
         f"only mention objects the subject interacts with, or is near"
@@ -39,8 +39,8 @@ def gemini_final_report():
     #save and add to report
     (assets_dir() / f"{asset_name}_event_description.txt").write_text(event_description)
     (assets_dir() / f"{asset_name}_transcript.txt").write_text(transcript)
-    event_descrption_path = assets_dir() / f"{asset_name}_event_description.txt"
-    transcript_path       = assets_dir() / f"{asset_name}_transcript.txt"
+    event_descrption_path = assets_dir() / f"{asset_name()}_event_description.txt"
+    transcript_path       = assets_dir() / f"{asset_name()}_transcript.txt"
     from C_CSV_report import add_to_report
     report_items = {
         "event_description"      : f"{asset_name()}_event_description.txt", 

@@ -115,7 +115,7 @@ def image_sequencer(
         if search_window > max_window:
             print(f"Window  : clamped from ±{search_window} to ±{max_window} (half interval)")
             search_window = max_window
-        effective_window = search_window
+        effective_window = int(search_window)
 
     print(f"Video   : {Path(video_path).name}")
     print(f"          {fps:.3g} fps · {total_frames} frames · {duration:.1f}s")
@@ -132,7 +132,7 @@ def image_sequencer(
     # start_frame so we only decode the requested sub-range of the video.
     scores: list[float] = []
 
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    seek_exact(cap, start_frame)
     for _ in _progress(range(start_frame, end_frame), "Pass 1: scoring", total=end_frame - start_frame):
         ret, frame = cap.read()
         if not ret:
@@ -202,7 +202,7 @@ def image_sequencer(
     wanted = {fi: (sp, score) for sp, fi, score in selections}
     results: list[dict] = []
 
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+    seek_exact(cap, start_frame)
     for frame_idx in _progress(range(start_frame, end_frame), "Pass 3: writing", total=end_frame - start_frame):
         ret, frame = cap.read()
         if frame_idx not in wanted:
@@ -383,29 +383,69 @@ def video_fps(video_path):
     return float(num) / float(den)
 
 
+def frames_at_indices(video_path, frame_indices):
+    '''INPUT  : path to a video file, iterable of frame indices
+       OUTPUT : dict {frame_idx: ndarray} -- same single sequential pass as
+                frames_at_times, but addressed by frame number instead of time.
+                No cap.set(POS_FRAMES, N): it lands on the preceding keyframe,
+                pairing frame N's index with frame N-k's pixels.'''
+    wanted = set(frame_indices)
+    cap = cv2.VideoCapture(str(video_path))
+    frames, idx = {}, 0
+    while wanted:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if idx in wanted:
+            frames[idx] = frame.copy()
+            wanted.discard(idx)
+        idx += 1
+    cap.release()
+    return frames
+
+
+def seek_exact(cap, frame_idx):
+    '''INPUT  : an open VideoCapture, the frame index wanted
+       OUTPUT : bool -- cap left so the NEXT read() returns exactly frame_idx.
+                For contiguous range readers; use frames_at_indices for scattered
+                frames. Rewind + grab() counts exactly, cap.set(POS_FRAMES) doesn't.'''
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    for _ in range(frame_idx):
+        if not cap.grab():
+            return False
+    return True
+
+
 def frames_at_times(video_path, target_times_s):
     '''INPUT  : path to a video file, list of target times in seconds (e.g. one
                 per subject)
-       OUTPUT : list[ndarray] -- one frame per target, the frame whose own
-                decoded timestamp (CAP_PROP_POS_MSEC) is nearest that target.
+       OUTPUT : (list[ndarray], list[int]) -- one frame per target, the frame whose
+                own decoded timestamp (CAP_PROP_POS_MSEC) is nearest that target,
+                and the frame index each one actually came from. Use that index to
+                label the frame: recomputing it as start_s * fps is a guess that
+                disagrees with the frame you were handed.
                 Single sequential cap.read() pass, same principle as
                 image_sequencer's Pass 3 -- no cap.set(POS_FRAMES, N)
                 mid-stream (unreliable on VFR).'''
     cap = cv2.VideoCapture(str(video_path))
     best_frame = [None] * len(target_times_s)
+    best_idx = [None] * len(target_times_s)
     best_dt = [float("inf")] * len(target_times_s)
+    frame_idx = -1
     while True:
         ret, frame = cap.read()
         if not ret:
             break
+        frame_idx += 1
         t_s = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
         for i, target in enumerate(target_times_s):
             dt = abs(t_s - target)
             if dt < best_dt[i]:
                 best_dt[i] = dt
                 best_frame[i] = frame.copy()
+                best_idx[i] = frame_idx
     cap.release()
-    return best_frame
+    return best_frame, best_idx
 
 
 if __name__ == "__main__":

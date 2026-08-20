@@ -9,9 +9,27 @@ every other function that used to take assets_dir/asset_name/report_path as
 parameters now reads them from here instead.
 """
 import os
+import sys
 from pathlib import Path
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+SRC_DIR = Path(REPO_ROOT) / "src"
+CLAUDE_AGENT_DIR = SRC_DIR / "claude_agent"
+
+# Importing A_Config puts every topic folder under src/ on sys.path, so no cell has to patch it.
+_ON_PATH = [
+    SRC_DIR,
+    CLAUDE_AGENT_DIR,
+    SRC_DIR / "Two2D",
+    SRC_DIR / "Thr3D",
+    SRC_DIR / "Rendering",
+    SRC_DIR / "run_models",
+    SRC_DIR / "Experiments" / "templates",
+]
+for _p in _ON_PATH:
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 _CASE_NAME = None
 _EXPERIMENT = None
@@ -41,6 +59,10 @@ def report_path():
     return assets_dir() / f"report_{_CASE_NAME}_{_EXPERIMENT}.csv"
 
 
+def asset_list_path():
+    return assets_dir() / f"asset_list_{_CASE_NAME}_{_EXPERIMENT}.csv"
+
+
 def _with_experiment(base):
     '''Append the active experiment subfolder if one is set, else use base as-is --
     some cases have multiple experiments' worth of data side by side under the same
@@ -51,10 +73,23 @@ def _with_experiment(base):
 def source_dir(): return case_dir() / "010_source"
 def source_video_path(): return next(source_dir().glob("*.mp4"))
 def query_dir(): return case_dir() / "012_Gemini_outputs"
+def agent_p_output_dir(): return _with_experiment(case_dir() / "012_agent_p_output")
 def yolo_masks_dir(): return _with_experiment(case_dir() / "015_YOLO")
 def sam3_masks_dir(): return _with_experiment(case_dir() / "015_SAM3_masks")
-def frames_for_cam_poses_dir(): return _with_experiment(case_dir() / "020_frames_for_cam_poses")
-def frames_for_recon_dir(): return _with_experiment(case_dir() / "020_frames_for_recon")
+def _beat(base, beat_key):
+    '''Append the beat's own subfolder to a recon stage folder. Each beat that asks
+    for a recon gets its own frames/predictions rather than overwriting the last one
+    (see render_paper_edit.build_recon_requests). beat_key is beat["beat_id"][0],
+    the same key D_2d_analysis and W_video_editor already use. None keeps the
+    pre-multi-recon path, so zero-arg callers are unaffected.'''
+    return base / beat_key if beat_key else base
+
+def frames_for_cam_poses_dir(beat_key=None): return _beat(_with_experiment(case_dir() / "020_frames_for_cam_poses"), beat_key)
+def frames_for_recon_dir(beat_key=None): return _beat(_with_experiment(case_dir() / "020_frames_for_recon"), beat_key)
+def recon_for_MAP_dir(beat_key=None): return _beat(_with_experiment(case_dir() / "031_Recon_MAP"), beat_key)
+def recon_for_EVENT_dir(beat_key=None): return _beat(_with_experiment(case_dir() / "031_Recon_EVENT"), beat_key)
+
+
 def mega_SAM_output_dir(): return _with_experiment(case_dir() / "036_MEGASAM_output") 
 def vggt_o_output_dir(): return _with_experiment(case_dir() / "035_VGGT_O_output")
 def predictions_path(): return vggt_o_output_dir() / "predictions.npz"
@@ -62,11 +97,24 @@ def cut3r_output_dir(): return _with_experiment(case_dir() / "035_CUT3R_output")
 def lingbot_map_dir(): return _with_experiment(case_dir() / "036_lingbot_map_output")
 def ply_dir(): return vggt_o_output_dir() / "ply"  # already experiment-scoped via vggt_o_output_dir()
 def reg_dir(): return _with_experiment(case_dir() / "030_Registrations")
-def csv_path_gps(): return case_dir() / "000_GPS_Data" / "GPS_tags.csv"
+def gps_data_dir(): return case_dir() / "000_GPS_Data"
+def csv_path_gps(): return gps_data_dir() / "GPS_tags.csv"
 def csv_path_pose(): return reg_dir() / "camera_poses.csv"
 
 
+def has_gps_data():
+    '''Whether this case has real-world GPS to scale against -- the video's own metadata
+    isn't enough (a single tag can't align anything), so the truth is a GPS csv/json
+    sitting in the GPS folder, hand-measured or otherwise.'''
+    d = gps_data_dir()
+    return d.exists() and (any(d.glob("*.csv")) or any(d.glob("*.json")))
+
+
+def length_units(): return "m" if has_gps_data() else "model units"
+
+
 FRAME_NAME_FMT = "{:04d}.jpg"
+MASK_NAME_FMT  = "{:04d}.png"   # also copy-pasted in P_projection_mapping, A_YOLO_seg, A_ROBOFLOW_SAM3, W_video_editor
 
 
 def to_report_path(path):
@@ -76,3 +124,10 @@ def to_report_path(path):
     via assets_dir() -- also zero-argument, so nothing needs threading
     through either side.'''
     return str(Path(path).resolve().relative_to(assets_dir().resolve()))
+
+
+def to_repo_path(path):
+    '''Path as the Claude agent sees it: relative to REPO_ROOT, forward slashes.
+    The SDK resolves every relative tool path against the project root it finds
+    by walking up from cwd, so this is what goes in a prompt's OUTPUT_DIR.'''
+    return Path(path).resolve().relative_to(Path(REPO_ROOT).resolve()).as_posix()

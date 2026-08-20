@@ -8,7 +8,7 @@ import webbrowser
 from pathlib import Path
 
 from A_Config import assets_dir, report_path, to_report_path, asset_name
-from C_CSV_report import add_to_report
+from C_CSV_report import add_to_report, add_to_asset_list
 
 # open3d/scenepic are picky about their conda env, so this viewer runs out-of-process
 # in a separate env (see U_scenepic_o3d_worker.py) rather than importing them here --
@@ -39,14 +39,14 @@ def view_ply_sequence_with_scenepic(ply_dir,  point_size=0.01,
         "--pattern", pattern,
     ], check=True, env=_clean_env())
 
-    add_to_report({"4D_recon_link": to_report_path(output_html)})
+    add_to_asset_list({"4D_recon_link": to_report_path(output_html)})
     webbrowser.open(str(output_html))
     return
 
 #automated numpy renderer
 from PIL import Image
 from plyfile import PlyData
-from C_CSV_report import add_to_report
+from C_CSV_report import add_to_report, add_to_asset_list
 
 
 def _read_ply_points_colors(ply_path):
@@ -186,7 +186,7 @@ def basic_point_cloud_render(
         str(gif_path),
     ], check=True)
     
-    add_to_report({
+    add_to_asset_list({
     f"point_cloud_render_{model}_mp4": mp4_name,
     f"point_cloud_render_{model}_gif": gif_name,
     f"point_cloud_render_{model}_thumb": to_report_path(thumb_path),
@@ -242,7 +242,7 @@ def BEV_render(
         whole capture's points never have to be merged/held in memory at once.
 
         out_path: if given, save there instead of assets_dir()/asset_name() and skip
-        add_to_report -- for callers (e.g. the density sweep) that manage their own
+        add_to_asset_list -- for callers (e.g. the density sweep) that manage their own
         output location/bookkeeping. Default None preserves the original
         assets_dir()-based behavior."""
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -347,7 +347,7 @@ def BEV_render(
         Image.fromarray(img).save(outpath)
 
         if out_path is None:
-            add_to_report({
+            add_to_asset_list({
                 f"BEV_render_{model}": to_report_path(outpath),
             })
         return 

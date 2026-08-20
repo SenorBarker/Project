@@ -22,7 +22,7 @@ import numpy as np
 import torch
 
 from A_Config import assets_dir, asset_name, to_report_path
-from C_CSV_report import add_to_report
+from C_CSV_report import add_to_asset_list
 from P_projection_mapping import reproject, DEVICE
 from Rendering.R_map_animator import interp_pos, hex_to_rgb
 
@@ -57,9 +57,15 @@ def BEV_trace_overlay(
     frustum_length=None, frustum_half_angle_deg=22.0,
     supersample=2,
     fps=25, smooth_window_sec=1.0,
+    beat=None,
 ):
-    """n_frames is the only thing controlling frame count -- unlike R_map_animator,
-    it is never derived from duration*fps.
+    """n_frames/fps come from the MAP beat and source video; the passed
+    values are only the fallback when there's no MAP beat.
+
+    beat: the Producer MAP beat this overlay is for, when the paper edit has more
+    than one. Its beat_id suffixes the frames dir and asset-list key so two BEV_MAP
+    beats don't overwrite each other. None keeps the single-map behaviour -- first
+    BEV_MAP beat in the paper edit, unsuffixed frames dir.
 
     subject_positions: dict[frame]->pos (single subject) or dict[name]->dict[frame]->pos
     (multiple). smooth_window_sec: subject_positions is smoothed with a centered running
@@ -72,8 +78,26 @@ def BEV_trace_overlay(
     investigation). Set to 0 to disable and use raw positions."""
     from PIL import Image, ImageDraw
 
+    _beat_key = beat["beat_id"][0] if beat else None
+    _suffix   = f"_{_beat_key}" if _beat_key else ""
+
+    try:
+        from A_Config import agent_p_output_dir, case_name, case_dir
+        from Two2D.B_video_processing import video_fps
+        import json
+        bev_beat = beat
+        if bev_beat is None:
+            paper_edit = json.loads(
+                (agent_p_output_dir() / f"{case_name()}_paper_edit.json").read_text(encoding="utf-8"))
+            bev_beat = next(b for b in paper_edit["beats"]
+                            if b["archetype"] == "MAP" and "BEV_MAP" in (b.get("requested_flags") or []))
+        fps = video_fps(next((case_dir() / "010_source").glob("*.mp4")))
+        n_frames = bev_beat["duration_seconds"] * fps
+    except (FileNotFoundError, StopIteration, KeyError):
+        pass  # no paper edit / no BEV_MAP beat -- keep the caller's n_frames, fps
+
     if bev_png_path is None:
-        bev_png_path = assets_dir() / f"{asset_name()}_BEV_tile_render_PM.png"
+        bev_png_path = assets_dir() / f"{asset_name()}_BEV_tile_render_PM{_suffix}.png"
     base_img = Image.open(bev_png_path).convert("RGBA")
     w0, h0 = base_img.size
 
@@ -189,7 +213,7 @@ def BEV_trace_overlay(
     S = max(1, int(supersample))
     base = base_img.resize((w * S, h * S), Image.LANCZOS) if S > 1 else base_img
 
-    frames_dir = assets_dir() / "bev_trace_frames"
+    frames_dir = assets_dir() / f"bev_trace_frames{_suffix}"
     frames_dir.mkdir(parents=True, exist_ok=True)
 
     for fi in range(n_frames):
@@ -240,5 +264,6 @@ def BEV_trace_overlay(
         frame.save(frames_dir / f"frame_{fi:04d}.png")
 
     print(f"Written: {frames_dir}  ({n_frames} frame PNGs)")
-    add_to_report({"bev_trace_frames_dir": to_report_path(frames_dir)})
+    # Suffixed for the same overwrite-by-key reason as R_map_animator's rows.
+    add_to_asset_list({f"bev_trace_frames_dir{_suffix}": to_report_path(frames_dir)})
     return frames_dir

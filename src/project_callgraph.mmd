@@ -1,0 +1,805 @@
+%% Project function/def map — /workspace/project/src
+%% Nodes = top-level defs (Class.method for methods). Edges = a def calling another project def.
+%% A_Config.py is collapsed to one node (146 call sites into its path getters); its defs are listed in the second diagram.
+flowchart LR
+  subgraph G_Config___report_plumbing["Config & report plumbing"]
+    direction TB
+    A_Config__ALL["A_Config.py<br/>case/path getters (33)"]
+    subgraph S_A_Interactions_py["A_Interactions.py"]
+      direction TB
+      A_Interactions__subject_selector["subject_selector"]
+    end
+    subgraph S_C_CSV_report_py["C_CSV_report.py"]
+      direction TB
+      C_CSV_report___add_rows["_add_rows"]
+      C_CSV_report__add_to_report["add_to_report"]
+      C_CSV_report__add_to_asset_list["add_to_asset_list"]
+      C_CSV_report__frames_to_time["frames_to_time"]
+      C_CSV_report__attach_times_of_day["attach_times_of_day"]
+    end
+  end
+  subgraph G_2D__Gemini___video___scoring["2D: Gemini / video / scoring"]
+    direction TB
+    subgraph S_D_2d_analysis_py["D_2d_analysis.py"]
+      direction TB
+      D_2d_analysis__frames_present["frames_present"]
+      D_2d_analysis__list_track_id_dirs["list_track_id_dirs"]
+      D_2d_analysis__is_3D_possible["is_3D_possible"]
+      D_2d_analysis__contiguous_durations["contiguous_durations"]
+      D_2d_analysis__GPS_test["GPS_test"]
+      D_2d_analysis__analysis_2D["analysis_2D"]
+      D_2d_analysis__mask_analysis["mask_analysis"]
+      D_2d_analysis__analysis_2d_from_masks["analysis_2d_from_masks"]
+      D_2d_analysis__analysis_2d_gemvsSAM["analysis_2d_gemvsSAM"]
+    end
+    subgraph S_Two2D_AX_gem_SAM_matcher_py["Two2D/AX_gem_SAM_matcher.py"]
+      direction TB
+      Two2D_AX_gem_SAM_matcher__gem_box_to_xyxy["gem_box_to_xyxy"]
+      Two2D_AX_gem_SAM_matcher__sam_det_to_xyxy["sam_det_to_xyxy"]
+      Two2D_AX_gem_SAM_matcher__iou_xyxy["iou_xyxy"]
+      Two2D_AX_gem_SAM_matcher__load_SAM_dets["load_SAM_dets"]
+      Two2D_AX_gem_SAM_matcher__gem_person_targets_lookup["gem_person_targets_lookup"]
+      Two2D_AX_gem_SAM_matcher__match_gem_people_to_sam["match_gem_people_to_sam"]
+    end
+    subgraph S_Two2D_AY_claude_crop_matcher_py["Two2D/AY_claude_crop_matcher.py"]
+      direction TB
+      Two2D_AY_claude_crop_matcher__descriptor_targets["descriptor_targets"]
+      Two2D_AY_claude_crop_matcher___mask_frames["_mask_frames"]
+      Two2D_AY_claude_crop_matcher___isolate["_isolate"]
+      Two2D_AY_claude_crop_matcher___save_8bit["_save_8bit"]
+      Two2D_AY_claude_crop_matcher__write_masked_crops["write_masked_crops"]
+      Two2D_AY_claude_crop_matcher___match_prompt["_match_prompt"]
+      Two2D_AY_claude_crop_matcher___ask_sync["_ask_sync"]
+      Two2D_AY_claude_crop_matcher___ask["_ask"]
+      Two2D_AY_claude_crop_matcher__match_tracks_to_descriptors["match_tracks_to_descriptors"]
+    end
+    subgraph S_Two2D_A_gemini_py["Two2D/A_gemini.py"]
+      direction TB
+      Two2D_A_gemini__gemini_vid_to_text["gemini_vid_to_text"]
+      Two2D_A_gemini__query_from_description["query_from_description"]
+      Two2D_A_gemini__gemini_cache_video["gemini_cache_video"]
+      Two2D_A_gemini__gemini_query_CSV_cached["gemini_query_CSV_cached"]
+    end
+    subgraph S_Two2D_A_gemini_v02_py["Two2D/A_gemini_v02.py"]
+      direction TB
+      Two2D_A_gemini_v02__get_box["get_box"]
+      Two2D_A_gemini_v02__draw_point_overlay["draw_point_overlay"]
+      Two2D_A_gemini_v02___deterministic_config["_deterministic_config"]
+      Two2D_A_gemini_v02___log_response_meta["_log_response_meta"]
+      Two2D_A_gemini_v02__gemini_vid_to_text["gemini_vid_to_text"]
+      Two2D_A_gemini_v02__query_from_description["query_from_description"]
+      Two2D_A_gemini_v02__gemini_cache_video["gemini_cache_video"]
+      Two2D_A_gemini_v02__gemini_query_CSV_cached["gemini_query_CSV_cached"]
+    end
+    subgraph S_Two2D_A_gemini_v03_py["Two2D/A_gemini_v03.py"]
+      direction TB
+      Two2D_A_gemini_v03__get_box["get_box"]
+      Two2D_A_gemini_v03__draw_point_overlay["draw_point_overlay"]
+      Two2D_A_gemini_v03___deterministic_config["_deterministic_config"]
+      Two2D_A_gemini_v03___strip_code_fence["_strip_code_fence"]
+      Two2D_A_gemini_v03___log_response_meta["_log_response_meta"]
+      Two2D_A_gemini_v03__gemini_vid_to_text["gemini_vid_to_text"]
+      Two2D_A_gemini_v03__query_from_description["query_from_description"]
+      Two2D_A_gemini_v03__gemini_cache_video["gemini_cache_video"]
+      Two2D_A_gemini_v03__gemini_query_CSV_cached["gemini_query_CSV_cached"]
+    end
+    subgraph S_Two2D_B_video_processing_py["Two2D/B_video_processing.py"]
+      direction TB
+      Two2D_B_video_processing___blur_score["_blur_score"]
+      Two2D_B_video_processing__video_dims["video_dims"]
+      Two2D_B_video_processing__image_sequencer["image_sequencer"]
+      Two2D_B_video_processing__main["main"]
+      Two2D_B_video_processing___probe_format["_probe_format"]
+      Two2D_B_video_processing__video_creation_time["video_creation_time"]
+      Two2D_B_video_processing__video_start_time["video_start_time"]
+      Two2D_B_video_processing__video_fps["video_fps"]
+      Two2D_B_video_processing__frames_at_indices["frames_at_indices"]
+      Two2D_B_video_processing__seek_exact["seek_exact"]
+      Two2D_B_video_processing__frames_at_times["frames_at_times"]
+      Two2D_B_video_processing__available_frames["available_frames"]
+    end
+    subgraph S_Two2D_C_Scoring_py["Two2D/C_Scoring.py"]
+      direction TB
+      Two2D_C_Scoring__sharpness_score["sharpness_score"]
+      Two2D_C_Scoring__framing_score["framing_score"]
+      Two2D_C_Scoring__size_score["size_score"]
+      Two2D_C_Scoring__frame_scoring["frame_scoring"]
+      Two2D_C_Scoring__sequence_scoring["sequence_scoring"]
+      Two2D_C_Scoring__score_formula["score_formula"]
+      Two2D_C_Scoring__frame_prob_dist["frame_prob_dist"]
+      Two2D_C_Scoring__editor["editor"]
+    end
+    subgraph S_Two2D_W_video_editor_py["Two2D/W_video_editor.py"]
+      direction TB
+      Two2D_W_video_editor__video_edit["video_edit"]
+      Two2D_W_video_editor__mask_frame_range["mask_frame_range"]
+      Two2D_W_video_editor___load_mask_bool["_load_mask_bool"]
+      Two2D_W_video_editor__apply_mask_overlay["apply_mask_overlay"]
+      Two2D_W_video_editor__video_overlay_edit["video_overlay_edit"]
+      Two2D_W_video_editor__mask_compositor["mask_compositor"]
+      Two2D_W_video_editor___mask_overlay_mezzanine_clip["_mask_overlay_mezzanine_clip"]
+      Two2D_W_video_editor___real_mezzanine_clip["_real_mezzanine_clip"]
+      Two2D_W_video_editor___map_mezzanine_clip["_map_mezzanine_clip"]
+      Two2D_W_video_editor___audio_duration["_audio_duration"]
+      Two2D_W_video_editor___concat_mezzanine_clips["_concat_mezzanine_clips"]
+      Two2D_W_video_editor__assemble_paper_edit["assemble_paper_edit"]
+      Two2D_W_video_editor__find_true_audio_span["find_true_audio_span"]
+      Two2D_W_video_editor__find_cut_point_in_zone["find_cut_point_in_zone"]
+      Two2D_W_video_editor__find_cut_points["find_cut_points"]
+      Two2D_W_video_editor__find_all_cut_points["find_all_cut_points"]
+    end
+  end
+  subgraph G_Model_runners["Model runners"]
+    direction TB
+    subgraph S_run_models_A_LOCAL_SAM3_py["run_models/A_LOCAL_SAM3.py"]
+      direction TB
+      run_models_A_LOCAL_SAM3__get_predictor["get_predictor"]
+      run_models_A_LOCAL_SAM3__release_predictor["release_predictor"]
+      run_models_A_LOCAL_SAM3___track_span["_track_span"]
+      run_models_A_LOCAL_SAM3___run_sam3_tracking_local["_run_sam3_tracking_local"]
+    end
+    subgraph S_run_models_A_ROBOFLOW_SAM3_py["run_models/A_ROBOFLOW_SAM3.py"]
+      direction TB
+      run_models_A_ROBOFLOW_SAM3__find_preceding_keyframe_s["find_preceding_keyframe_s"]
+      run_models_A_ROBOFLOW_SAM3__frame_pts_times["frame_pts_times"]
+      run_models_A_ROBOFLOW_SAM3__frame_index_at_time["frame_index_at_time"]
+      run_models_A_ROBOFLOW_SAM3__make_span_clip["make_span_clip"]
+      run_models_A_ROBOFLOW_SAM3__unwrap_predictions["unwrap_predictions"]
+      run_models_A_ROBOFLOW_SAM3__decode_mask_from_detection["decode_mask_from_detection"]
+      run_models_A_ROBOFLOW_SAM3__extract_track_id["extract_track_id"]
+      run_models_A_ROBOFLOW_SAM3___slugify_subject["_slugify_subject"]
+      run_models_A_ROBOFLOW_SAM3___dispatch_sam3_tracking["_dispatch_sam3_tracking"]
+      run_models_A_ROBOFLOW_SAM3__track_subject_sam3["track_subject_sam3"]
+      run_models_A_ROBOFLOW_SAM3__run_sam3_manual["run_sam3_manual"]
+      run_models_A_ROBOFLOW_SAM3___run_sam3_tracking["_run_sam3_tracking"]
+    end
+    subgraph S_run_models_A_YOLO_seg_py["run_models/A_YOLO_seg.py"]
+      direction TB
+      run_models_A_YOLO_seg___get_subject_ids["_get_subject_ids"]
+      run_models_A_YOLO_seg___detect_in_frame["_detect_in_frame"]
+      run_models_A_YOLO_seg___expand_bounds["_expand_bounds"]
+      run_models_A_YOLO_seg___run_tracking["_run_tracking"]
+      run_models_A_YOLO_seg__track_subject_masks["track_subject_masks"]
+      run_models_A_YOLO_seg__track_subject_masks_from_hints["track_subject_masks_from_hints"]
+    end
+    subgraph S_run_models_B_lingbot_map_py["run_models/B_lingbot_map.py"]
+      direction TB
+      run_models_B_lingbot_map___import_lingbot_demo["_import_lingbot_demo"]
+      run_models_B_lingbot_map__main["main"]
+      run_models_B_lingbot_map___frame_npz_path["_frame_npz_path"]
+      run_models_B_lingbot_map__save_lingbot_frame["save_lingbot_frame"]
+      run_models_B_lingbot_map__load_lingbot_frame["load_lingbot_frame"]
+      run_models_B_lingbot_map__run_lingbot_map["run_lingbot_map"]
+    end
+    subgraph S_run_models_E_VGGT_O_shards_py["run_models/E_VGGT_O_shards.py"]
+      direction TB
+      run_models_E_VGGT_O_shards__discover_vggt_omega_shards["discover_vggt_omega_shards"]
+      run_models_E_VGGT_O_shards__run_vggt_omega_shards_batched["run_vggt_omega_shards_batched"]
+      run_models_E_VGGT_O_shards__run_vggt_omega_shards["run_vggt_omega_shards"]
+    end
+    subgraph S_run_models_E_VGGT_omega_py["run_models/E_VGGT_omega.py"]
+      direction TB
+      run_models_E_VGGT_omega___unproject_depth_map_to_point_map["_unproject_depth_map_to_point_map"]
+      run_models_E_VGGT_omega__run_vggt_omega["run_vggt_omega"]
+    end
+    subgraph S_run_models_E_cut3r_recon_py["run_models/E_cut3r_recon.py"]
+      direction TB
+      run_models_E_cut3r_recon___make_raymap["_make_raymap"]
+      run_models_E_cut3r_recon___save_ply["_save_ply"]
+      run_models_E_cut3r_recon___export_outputs["_export_outputs"]
+      run_models_E_cut3r_recon___third_person_c2w["_third_person_c2w"]
+      run_models_E_cut3r_recon__run_cut3r["run_cut3r"]
+    end
+    subgraph S_run_models_E_megasam_recon_py["run_models/E_megasam_recon.py"]
+      direction TB
+      run_models_E_megasam_recon___clean_env["_clean_env"]
+      run_models_E_megasam_recon___run["_run"]
+      run_models_E_megasam_recon__run_megasam["run_megasam"]
+    end
+    subgraph S_run_models_E_megasam_vis_py["run_models/E_megasam_vis.py"]
+      direction TB
+      run_models_E_megasam_vis__visualise_megasam["visualise_megasam"]
+    end
+    subgraph S_run_models_E_realityscan_recon_py["run_models/E_realityscan_recon.py"]
+      direction TB
+      run_models_E_realityscan_recon___run["_run"]
+      run_models_E_realityscan_recon__run_realityscan["run_realityscan"]
+    end
+    subgraph S_run_models_spike_sam3_box_seed_py["run_models/spike_sam3_box_seed.py"]
+      direction TB
+      run_models_spike_sam3_box_seed__box_2d_to_corners["box_2d_to_corners"]
+      run_models_spike_sam3_box_seed__main["main"]
+    end
+    subgraph S_run_models_spike_sam3_local_py["run_models/spike_sam3_local.py"]
+      direction TB
+      run_models_spike_sam3_local__main["main"]
+    end
+  end
+  subgraph G_3D__recon_objects___transforms["3D: recon objects & transforms"]
+    direction TB
+    subgraph S_Thr3D_F_cut3r_vis_py["Thr3D/F_cut3r_vis.py"]
+      direction TB
+      Thr3D_F_cut3r_vis__load_ply["load_ply"]
+      Thr3D_F_cut3r_vis__visualise_cut3r["visualise_cut3r"]
+    end
+    subgraph S_Thr3D_F_post_recon_processing_py["Thr3D/F_post_recon_processing.py"]
+      direction TB
+      Thr3D_F_post_recon_processing__load_reality_scan_trace["load_reality_scan_trace"]
+      Thr3D_F_post_recon_processing__load_cut3r_trace["load_cut3r_trace"]
+      Thr3D_F_post_recon_processing__load_cut3r_trace_v2["load_cut3r_trace_v2"]
+      Thr3D_F_post_recon_processing__load_megasam_trace["load_megasam_trace"]
+      Thr3D_F_post_recon_processing__load_VGGT_O_trace["load_VGGT_O_trace"]
+      Thr3D_F_post_recon_processing__load_VGGT_trace["load_VGGT_trace"]
+      Thr3D_F_post_recon_processing__load_lingbot_map_trace["load_lingbot_map_trace"]
+      Thr3D_F_post_recon_processing__load_VGGT_O_predictions["load_VGGT_O_predictions"]
+      Thr3D_F_post_recon_processing__Reconstruction_load["Reconstruction.load"]
+      Thr3D_F_post_recon_processing__Reconstruction__cam0_anchor["Reconstruction._cam0_anchor"]
+      Thr3D_F_post_recon_processing__Reconstruction_cam_pos_dict["Reconstruction.cam_pos_dict"]
+      Thr3D_F_post_recon_processing__Reconstruction_VGGT_O_preds_to_ply_export["Reconstruction.VGGT_O_preds_to_ply_export"]
+      Thr3D_F_post_recon_processing___write_ply["_write_ply"]
+      Thr3D_F_post_recon_processing__build_frame_index["build_frame_index"]
+      Thr3D_F_post_recon_processing__positions_to_frame_dict["positions_to_frame_dict"]
+    end
+    subgraph S_Thr3D_F_transpose_to_recon_objects_py["Thr3D/F_transpose_to_recon_objects.py"]
+      direction TB
+      Thr3D_F_transpose_to_recon_objects___as_hw["_as_hw"]
+      Thr3D_F_transpose_to_recon_objects___as_nhw["_as_nhw"]
+      Thr3D_F_transpose_to_recon_objects___load_lowres_rgb_from_full["_load_lowres_rgb_from_full"]
+      Thr3D_F_transpose_to_recon_objects__cut3r_to_reconstruction["cut3r_to_reconstruction"]
+      Thr3D_F_transpose_to_recon_objects__megasam_to_reconstruction["megasam_to_reconstruction"]
+      Thr3D_F_transpose_to_recon_objects__lingbot_map_to_reconstruction["lingbot_map_to_reconstruction"]
+      Thr3D_F_transpose_to_recon_objects__vggt_plain_to_reconstruction["vggt_plain_to_reconstruction"]
+    end
+    subgraph S_Thr3D_G_transforms_alignments_py["Thr3D/G_transforms_alignments.py"]
+      direction TB
+      Thr3D_G_transforms_alignments__transform_RST["transform_RST"]
+      Thr3D_G_transforms_alignments__combine_transforms["combine_transforms"]
+      Thr3D_G_transforms_alignments__unproject["unproject"]
+      Thr3D_G_transforms_alignments__apply_cam0_frame["apply_cam0_frame"]
+      Thr3D_G_transforms_alignments___rot_x["_rot_x"]
+      Thr3D_G_transforms_alignments___rot_y["_rot_y"]
+      Thr3D_G_transforms_alignments___rot_z["_rot_z"]
+      Thr3D_G_transforms_alignments___rc_rotation_matrix["_rc_rotation_matrix"]
+      Thr3D_G_transforms_alignments__ortho_charts["ortho_charts"]
+      Thr3D_G_transforms_alignments__recon_to_recon_matcher["recon_to_recon_matcher"]
+      Thr3D_G_transforms_alignments__recon_to_recon_transform["recon_to_recon_transform"]
+      Thr3D_G_transforms_alignments__merge_pos["merge_pos"]
+      Thr3D_G_transforms_alignments___umeyama_solve["_umeyama_solve"]
+      Thr3D_G_transforms_alignments___umeyama_finish["_umeyama_finish"]
+      Thr3D_G_transforms_alignments__umeyama_align["umeyama_align"]
+      Thr3D_G_transforms_alignments__umeyama_align_anchor["umeyama_align_anchor"]
+    end
+    subgraph S_Thr3D_U_scenepic_o3d_worker_py["Thr3D/U_scenepic_o3d_worker.py"]
+      direction TB
+      Thr3D_U_scenepic_o3d_worker__view_ply_sequence_with_scenepic["view_ply_sequence_with_scenepic"]
+    end
+  end
+  subgraph G_Geo___metric___subjects["Geo / metric / subjects"]
+    direction TB
+    subgraph S_H_Geolocation_GMAPS_py["H_Geolocation_GMAPS.py"]
+      direction TB
+      H_Geolocation_GMAPS__fetch_metadata["fetch_metadata"]
+      H_Geolocation_GMAPS__fetch_image["fetch_image"]
+      H_Geolocation_GMAPS__fetch_pano["fetch_pano"]
+      H_Geolocation_GMAPS__show_pano["show_pano"]
+      H_Geolocation_GMAPS__compute_sift["compute_sift"]
+      H_Geolocation_GMAPS__add_sift_to_candidates["add_sift_to_candidates"]
+      H_Geolocation_GMAPS__match_sift["match_sift"]
+      H_Geolocation_GMAPS__fetch_panos["fetch_panos"]
+      H_Geolocation_GMAPS__match_pano_sets["match_pano_sets"]
+      H_Geolocation_GMAPS__cross_match_table["cross_match_table"]
+      H_Geolocation_GMAPS__cross_match_table2["cross_match_table2"]
+      H_Geolocation_GMAPS__show_matches["show_matches"]
+      H_Geolocation_GMAPS__show_matches_tb["show_matches_tb"]
+      H_Geolocation_GMAPS__show_frame_matches["show_frame_matches"]
+      H_Geolocation_GMAPS__rotation_matrix["rotation_matrix"]
+      H_Geolocation_GMAPS__filter_epipolar["filter_epipolar"]
+      H_Geolocation_GMAPS__triangulate_matches["triangulate_matches"]
+      H_Geolocation_GMAPS__localise_frame["localise_frame"]
+      H_Geolocation_GMAPS__estimate_pitch["estimate_pitch"]
+    end
+    subgraph S_Q_GPS_processing_py["Q_GPS_processing.py"]
+      direction TB
+      Q_GPS_processing__android_movie_GPS["android_movie_GPS"]
+      Q_GPS_processing__reverse_geocode["reverse_geocode"]
+      Q_GPS_processing__csv_to_GPS_dict["csv_to_GPS_dict"]
+    end
+    subgraph S_Q_Metric_georeferencing_py["Q_Metric_georeferencing.py"]
+      direction TB
+      Q_Metric_georeferencing__lat_long_to_metres_3dims["lat_long_to_metres_3dims"]
+      Q_Metric_georeferencing__GPS_camerapose_matcher["GPS_camerapose_matcher"]
+      Q_Metric_georeferencing___speed_direction_single["_speed_direction_single"]
+      Q_Metric_georeferencing__speed_direction["speed_direction"]
+      Q_Metric_georeferencing__graph_real_world["graph_real_world"]
+      Q_Metric_georeferencing__metres_to_latlong["metres_to_latlong"]
+      Q_Metric_georeferencing__model_to_GPS_calibrated_locations["model_to_GPS_calibrated_locations"]
+    end
+    subgraph S_Q_subject_analysis_py["Q_subject_analysis.py"]
+      direction TB
+      Q_subject_analysis__subject_model_positions["subject_model_positions"]
+      Q_subject_analysis__meeting_calculator["meeting_calculator"]
+      Q_subject_analysis__contact_frames["contact_frames"]
+      Q_subject_analysis__subject_direction["subject_direction"]
+      Q_subject_analysis__find_mask_centroids_in_model_space["find_mask_centroids_in_model_space"]
+      Q_subject_analysis__subject_to_metric_and_gps_space["subject_to_metric_and_gps_space"]
+      Q_subject_analysis__rolling_by_frame["rolling_by_frame"]
+    end
+  end
+  subgraph G_Projection___rendering["Projection & rendering"]
+    direction TB
+    subgraph S_P_projection_mapping_py["P_projection_mapping.py"]
+      direction TB
+      P_projection_mapping__check_frame_count["check_frame_count"]
+      P_projection_mapping__load_full_res_frame["load_full_res_frame"]
+      P_projection_mapping__load_mask["load_mask"]
+      P_projection_mapping__footprint_size["footprint_size"]
+      P_projection_mapping__joint_bilateral_upsample["joint_bilateral_upsample"]
+      P_projection_mapping__reproject["reproject"]
+      P_projection_mapping__scale_intrinsic["scale_intrinsic"]
+      P_projection_mapping__bilinear_sample["bilinear_sample"]
+      P_projection_mapping__upsample_confidence["upsample_confidence"]
+      P_projection_mapping__get_full_res_camera["get_full_res_camera"]
+      P_projection_mapping__crop_to_mask_region["crop_to_mask_region"]
+      P_projection_mapping__unproject_masked["unproject_masked"]
+      P_projection_mapping___as_recon_list["_as_recon_list"]
+      P_projection_mapping__find_recon_for_frame["find_recon_for_frame"]
+      P_projection_mapping__load_frame_inputs["load_frame_inputs"]
+      P_projection_mapping__composite_overlay["composite_overlay"]
+      P_projection_mapping___ortho_view_from_recon["_ortho_view_from_recon"]
+      P_projection_mapping__BEV_tile_render_PM["BEV_tile_render_PM"]
+      P_projection_mapping__projection_mapping_sequence["projection_mapping_sequence"]
+    end
+    subgraph S_P_trace_overlayer_py["P_trace_overlayer.py"]
+      direction TB
+      P_trace_overlayer___time_smoothed["_time_smoothed"]
+      P_trace_overlayer__BEV_trace_overlay["BEV_trace_overlay"]
+    end
+    subgraph S_Rendering_R_map_animator_py["Rendering/R_map_animator.py"]
+      direction TB
+      Rendering_R_map_animator__parse_time["parse_time"]
+      Rendering_R_map_animator__world_xy["world_xy"]
+      Rendering_R_map_animator__to_image_px["to_image_px"]
+      Rendering_R_map_animator__auto_zoom["auto_zoom"]
+      Rendering_R_map_animator__fetch_map["fetch_map"]
+      Rendering_R_map_animator__path_d["path_d"]
+      Rendering_R_map_animator__cumulative_lengths["cumulative_lengths"]
+      Rendering_R_map_animator__hex_to_rgb["hex_to_rgb"]
+      Rendering_R_map_animator__interp_pos["interp_pos"]
+      Rendering_R_map_animator__render_frames["render_frames"]
+      Rendering_R_map_animator__export_gif["export_gif"]
+      Rendering_R_map_animator__export_mp4["export_mp4"]
+      Rendering_R_map_animator__main["main"]
+    end
+    subgraph S_Rendering_U_rendering_py["Rendering/U_rendering.py"]
+      direction TB
+      Rendering_U_rendering___clean_env["_clean_env"]
+      Rendering_U_rendering__view_ply_sequence_with_scenepic["view_ply_sequence_with_scenepic"]
+      Rendering_U_rendering___read_ply_points_colors["_read_ply_points_colors"]
+      Rendering_U_rendering__basic_point_cloud_render["basic_point_cloud_render"]
+      Rendering_U_rendering___ortho_project_ply_to_cam["_ortho_project_ply_to_cam"]
+      Rendering_U_rendering__BEV_render["BEV_render"]
+    end
+  end
+  subgraph G_Agent___outputs["Agent & outputs"]
+    direction TB
+    subgraph S_V_text_summary_py["V_text_summary.py"]
+      direction TB
+      V_text_summary__gemini_final_report["gemini_final_report"]
+    end
+    subgraph S_W_populate_pptx_py["W_populate_pptx.py"]
+      direction TB
+      W_populate_pptx__set_text["set_text"]
+      W_populate_pptx__substitute_placeholders["substitute_placeholders"]
+      W_populate_pptx__replace_image["replace_image"]
+      W_populate_pptx__replace_video["replace_video"]
+      W_populate_pptx___col_letter["_col_letter"]
+      W_populate_pptx___update_range_end_row["_update_range_end_row"]
+      W_populate_pptx___populate_num_cache["_populate_num_cache"]
+      W_populate_pptx___populate_str_cache["_populate_str_cache"]
+      W_populate_pptx__update_scatter["update_scatter"]
+      W_populate_pptx__dispatch_chart["dispatch_chart"]
+      W_populate_pptx__add_hyperlink["add_hyperlink"]
+      W_populate_pptx__replace_video_thumb["replace_video_thumb"]
+      W_populate_pptx__delete_slide["delete_slide"]
+      W_populate_pptx___load_csv_dict["_load_csv_dict"]
+      W_populate_pptx___renumber_person_keys["_renumber_person_keys"]
+      W_populate_pptx__populate["populate"]
+    end
+    subgraph S_claude_agent_constitution_view_py["claude_agent/constitution_view.py"]
+      direction TB
+      claude_agent_constitution_view__parse_rules["parse_rules"]
+      claude_agent_constitution_view__print_rules["print_rules"]
+      claude_agent_constitution_view__constitution_view["constitution_view"]
+      claude_agent_constitution_view__producer_constitution["producer_constitution"]
+    end
+    subgraph S_claude_agent_producer_agent_execution_py["claude_agent/producer_agent_execution.py"]
+      direction TB
+      claude_agent_producer_agent_execution___make_logger["_make_logger"]
+      claude_agent_producer_agent_execution___run_producer_agent_async["_run_producer_agent_async"]
+      claude_agent_producer_agent_execution__run_producer_agent["run_producer_agent"]
+      claude_agent_producer_agent_execution__build_producer_prompt_draft1["build_producer_prompt_draft1"]
+      claude_agent_producer_agent_execution__build_producer_prompt_draft2["build_producer_prompt_draft2"]
+      claude_agent_producer_agent_execution__build_producer_prompt_revision["build_producer_prompt_revision"]
+    end
+    subgraph S_claude_agent_render_paper_edit_py["claude_agent/render_paper_edit.py"]
+      direction TB
+      claude_agent_render_paper_edit___esc["_esc"]
+      claude_agent_render_paper_edit___toc_row["_toc_row"]
+      claude_agent_render_paper_edit___beat_block["_beat_block"]
+      claude_agent_render_paper_edit__render_html["render_html"]
+      claude_agent_render_paper_edit__paper_edit_path["paper_edit_path"]
+      claude_agent_render_paper_edit__render_and_save["render_and_save"]
+      claude_agent_render_paper_edit___beat_flags["_beat_flags"]
+      claude_agent_render_paper_edit__derive_flags["derive_flags"]
+      claude_agent_render_paper_edit__derive_and_save_flags["derive_and_save_flags"]
+      claude_agent_render_paper_edit__build_tracking_requests["build_tracking_requests"]
+      claude_agent_render_paper_edit__build_meeting_requests["build_meeting_requests"]
+      claude_agent_render_paper_edit___merge_spans["_merge_spans"]
+      claude_agent_render_paper_edit__recon_window_frames["recon_window_frames"]
+    end
+  end
+  A_Interactions__subject_selector --> C_CSV_report__add_to_report
+  A_Interactions__subject_selector --> Two2D_B_video_processing__seek_exact
+  C_CSV_report__add_to_asset_list --> A_Config__ALL
+  C_CSV_report__add_to_asset_list --> C_CSV_report___add_rows
+  C_CSV_report__add_to_report --> A_Config__ALL
+  C_CSV_report__add_to_report --> C_CSV_report___add_rows
+  C_CSV_report__attach_times_of_day --> A_Config__ALL
+  C_CSV_report__attach_times_of_day --> C_CSV_report__add_to_report
+  C_CSV_report__attach_times_of_day --> C_CSV_report__frames_to_time
+  C_CSV_report__attach_times_of_day --> Two2D_B_video_processing__video_start_time
+  D_2d_analysis__GPS_test --> Q_GPS_processing__android_movie_GPS
+  D_2d_analysis__analysis_2D --> A_Config__ALL
+  D_2d_analysis__analysis_2d_from_masks --> A_Config__ALL
+  D_2d_analysis__analysis_2d_from_masks --> C_CSV_report__add_to_report
+  D_2d_analysis__analysis_2d_from_masks --> D_2d_analysis__contiguous_durations
+  D_2d_analysis__analysis_2d_from_masks --> D_2d_analysis__frames_present
+  D_2d_analysis__analysis_2d_from_masks --> D_2d_analysis__list_track_id_dirs
+  D_2d_analysis__analysis_2d_from_masks --> run_models_A_ROBOFLOW_SAM3___slugify_subject
+  D_2d_analysis__analysis_2d_gemvsSAM --> A_Config__ALL
+  D_2d_analysis__analysis_2d_gemvsSAM --> C_CSV_report__add_to_report
+  D_2d_analysis__analysis_2d_gemvsSAM --> D_2d_analysis__contiguous_durations
+  D_2d_analysis__analysis_2d_gemvsSAM --> Two2D_AX_gem_SAM_matcher__gem_person_targets_lookup
+  D_2d_analysis__analysis_2d_gemvsSAM --> Two2D_AX_gem_SAM_matcher__load_SAM_dets
+  D_2d_analysis__analysis_2d_gemvsSAM --> Two2D_AX_gem_SAM_matcher__match_gem_people_to_sam
+  D_2d_analysis__analysis_2d_gemvsSAM --> Two2D_B_video_processing__video_dims
+  D_2d_analysis__is_3D_possible --> D_2d_analysis__contiguous_durations
+  D_2d_analysis__mask_analysis --> C_CSV_report__add_to_report
+  D_2d_analysis__mask_analysis --> D_2d_analysis__contiguous_durations
+  D_2d_analysis__mask_analysis --> D_2d_analysis__frames_present
+  H_Geolocation_GMAPS__add_sift_to_candidates --> H_Geolocation_GMAPS__compute_sift
+  H_Geolocation_GMAPS__fetch_pano --> H_Geolocation_GMAPS__fetch_image
+  H_Geolocation_GMAPS__fetch_pano --> H_Geolocation_GMAPS__fetch_metadata
+  H_Geolocation_GMAPS__fetch_panos --> H_Geolocation_GMAPS__fetch_metadata
+  H_Geolocation_GMAPS__fetch_panos --> H_Geolocation_GMAPS__fetch_pano
+  H_Geolocation_GMAPS__localise_frame --> H_Geolocation_GMAPS__compute_sift
+  H_Geolocation_GMAPS__localise_frame --> H_Geolocation_GMAPS__show_frame_matches
+  H_Geolocation_GMAPS__match_pano_sets --> H_Geolocation_GMAPS__add_sift_to_candidates
+  H_Geolocation_GMAPS__match_pano_sets --> H_Geolocation_GMAPS__match_sift
+  H_Geolocation_GMAPS__triangulate_matches --> H_Geolocation_GMAPS__rotation_matrix
+  P_projection_mapping__BEV_tile_render_PM --> A_Config__ALL
+  P_projection_mapping__BEV_tile_render_PM --> C_CSV_report__add_to_asset_list
+  P_projection_mapping__BEV_tile_render_PM --> P_projection_mapping___ortho_view_from_recon
+  P_projection_mapping__BEV_tile_render_PM --> P_projection_mapping__composite_overlay
+  P_projection_mapping___ortho_view_from_recon --> A_Config__ALL
+  P_projection_mapping___ortho_view_from_recon --> Thr3D_G_transforms_alignments__unproject
+  P_projection_mapping__composite_overlay --> P_projection_mapping___as_recon_list
+  P_projection_mapping__composite_overlay --> P_projection_mapping__get_full_res_camera
+  P_projection_mapping__composite_overlay --> P_projection_mapping__joint_bilateral_upsample
+  P_projection_mapping__composite_overlay --> P_projection_mapping__load_frame_inputs
+  P_projection_mapping__composite_overlay --> P_projection_mapping__load_full_res_frame
+  P_projection_mapping__composite_overlay --> P_projection_mapping__reproject
+  P_projection_mapping__composite_overlay --> P_projection_mapping__unproject_masked
+  P_projection_mapping__composite_overlay --> Thr3D_G_transforms_alignments__transform_RST
+  P_projection_mapping__composite_overlay --> Thr3D_G_transforms_alignments__unproject
+  P_projection_mapping__find_recon_for_frame --> P_projection_mapping___as_recon_list
+  P_projection_mapping__get_full_res_camera --> P_projection_mapping__footprint_size
+  P_projection_mapping__get_full_res_camera --> P_projection_mapping__scale_intrinsic
+  P_projection_mapping__load_frame_inputs --> P_projection_mapping__find_recon_for_frame
+  P_projection_mapping__load_frame_inputs --> P_projection_mapping__get_full_res_camera
+  P_projection_mapping__load_frame_inputs --> P_projection_mapping__load_full_res_frame
+  P_projection_mapping__load_frame_inputs --> P_projection_mapping__load_mask
+  P_projection_mapping__projection_mapping_sequence --> A_Config__ALL
+  P_projection_mapping__projection_mapping_sequence --> C_CSV_report__add_to_asset_list
+  P_projection_mapping__projection_mapping_sequence --> P_projection_mapping__composite_overlay
+  P_projection_mapping__unproject_masked --> P_projection_mapping__crop_to_mask_region
+  P_projection_mapping__unproject_masked --> P_projection_mapping__footprint_size
+  P_projection_mapping__unproject_masked --> P_projection_mapping__joint_bilateral_upsample
+  P_projection_mapping__unproject_masked --> Thr3D_G_transforms_alignments__unproject
+  P_trace_overlayer__BEV_trace_overlay --> A_Config__ALL
+  P_trace_overlayer__BEV_trace_overlay --> C_CSV_report__add_to_asset_list
+  P_trace_overlayer__BEV_trace_overlay --> P_projection_mapping__reproject
+  P_trace_overlayer__BEV_trace_overlay --> P_trace_overlayer___time_smoothed
+  P_trace_overlayer__BEV_trace_overlay --> Rendering_R_map_animator__hex_to_rgb
+  P_trace_overlayer__BEV_trace_overlay --> Rendering_R_map_animator__interp_pos
+  P_trace_overlayer__BEV_trace_overlay --> Thr3D_F_post_recon_processing__Reconstruction_cam_pos_dict
+  P_trace_overlayer__BEV_trace_overlay --> Two2D_B_video_processing__video_fps
+  Q_GPS_processing__android_movie_GPS --> Q_GPS_processing__reverse_geocode
+  Q_GPS_processing__reverse_geocode --> C_CSV_report__add_to_report
+  Q_Metric_georeferencing__GPS_camerapose_matcher --> Q_Metric_georeferencing__lat_long_to_metres_3dims
+  Q_Metric_georeferencing__model_to_GPS_calibrated_locations --> Q_GPS_processing__csv_to_GPS_dict
+  Q_Metric_georeferencing__model_to_GPS_calibrated_locations --> Q_Metric_georeferencing__GPS_camerapose_matcher
+  Q_Metric_georeferencing__model_to_GPS_calibrated_locations --> Q_Metric_georeferencing__metres_to_latlong
+  Q_Metric_georeferencing__model_to_GPS_calibrated_locations --> Thr3D_F_post_recon_processing__load_reality_scan_trace
+  Q_Metric_georeferencing__model_to_GPS_calibrated_locations --> Thr3D_G_transforms_alignments__transform_RST
+  Q_Metric_georeferencing__model_to_GPS_calibrated_locations --> Thr3D_G_transforms_alignments__umeyama_align_anchor
+  Q_Metric_georeferencing__speed_direction --> A_Config__ALL
+  Q_Metric_georeferencing__speed_direction --> C_CSV_report__add_to_asset_list
+  Q_Metric_georeferencing__speed_direction --> C_CSV_report__add_to_report
+  Q_Metric_georeferencing__speed_direction --> Q_Metric_georeferencing___speed_direction_single
+  Q_subject_analysis__meeting_calculator --> A_Config__ALL
+  Q_subject_analysis__meeting_calculator --> C_CSV_report__add_to_report
+  Q_subject_analysis__meeting_calculator --> Q_Metric_georeferencing__metres_to_latlong
+  Q_subject_analysis__subject_direction --> C_CSV_report__add_to_report
+  Q_subject_analysis__subject_model_positions --> P_projection_mapping__load_frame_inputs
+  Q_subject_analysis__subject_model_positions --> P_projection_mapping__unproject_masked
+  Q_subject_analysis__subject_to_metric_and_gps_space --> Q_Metric_georeferencing__metres_to_latlong
+  Q_subject_analysis__subject_to_metric_and_gps_space --> Q_subject_analysis__find_mask_centroids_in_model_space
+  Q_subject_analysis__subject_to_metric_and_gps_space --> Thr3D_G_transforms_alignments__transform_RST
+  Rendering_R_map_animator__auto_zoom --> Rendering_R_map_animator__world_xy
+  Rendering_R_map_animator__main --> A_Config__ALL
+  Rendering_R_map_animator__main --> C_CSV_report__add_to_asset_list
+  Rendering_R_map_animator__main --> Rendering_R_map_animator__auto_zoom
+  Rendering_R_map_animator__main --> Rendering_R_map_animator__cumulative_lengths
+  Rendering_R_map_animator__main --> Rendering_R_map_animator__export_gif
+  Rendering_R_map_animator__main --> Rendering_R_map_animator__export_mp4
+  Rendering_R_map_animator__main --> Rendering_R_map_animator__fetch_map
+  Rendering_R_map_animator__main --> Rendering_R_map_animator__parse_time
+  Rendering_R_map_animator__main --> Rendering_R_map_animator__path_d
+  Rendering_R_map_animator__main --> Rendering_R_map_animator__render_frames
+  Rendering_R_map_animator__main --> Rendering_R_map_animator__to_image_px
+  Rendering_R_map_animator__main --> Two2D_B_video_processing__video_fps
+  Rendering_R_map_animator__render_frames --> Rendering_R_map_animator__hex_to_rgb
+  Rendering_R_map_animator__render_frames --> Rendering_R_map_animator__interp_pos
+  Rendering_R_map_animator__to_image_px --> Rendering_R_map_animator__world_xy
+  Rendering_U_rendering__BEV_render --> A_Config__ALL
+  Rendering_U_rendering__BEV_render --> C_CSV_report__add_to_asset_list
+  Rendering_U_rendering__BEV_render --> Rendering_U_rendering___ortho_project_ply_to_cam
+  Rendering_U_rendering___ortho_project_ply_to_cam --> Rendering_U_rendering___read_ply_points_colors
+  Rendering_U_rendering__basic_point_cloud_render --> A_Config__ALL
+  Rendering_U_rendering__basic_point_cloud_render --> C_CSV_report__add_to_asset_list
+  Rendering_U_rendering__basic_point_cloud_render --> Rendering_U_rendering___read_ply_points_colors
+  Rendering_U_rendering__view_ply_sequence_with_scenepic --> A_Config__ALL
+  Rendering_U_rendering__view_ply_sequence_with_scenepic --> C_CSV_report__add_to_asset_list
+  Rendering_U_rendering__view_ply_sequence_with_scenepic --> Rendering_U_rendering___clean_env
+  Thr3D_F_cut3r_vis__visualise_cut3r --> Thr3D_F_cut3r_vis__load_ply
+  Thr3D_F_post_recon_processing__Reconstruction_VGGT_O_preds_to_ply_export --> Thr3D_F_post_recon_processing___write_ply
+  Thr3D_F_post_recon_processing__Reconstruction_VGGT_O_preds_to_ply_export --> Thr3D_G_transforms_alignments__unproject
+  Thr3D_F_post_recon_processing__Reconstruction_cam_pos_dict --> Thr3D_F_post_recon_processing__Reconstruction__cam0_anchor
+  Thr3D_F_post_recon_processing__Reconstruction_cam_pos_dict --> Thr3D_G_transforms_alignments__apply_cam0_frame
+  Thr3D_F_post_recon_processing__Reconstruction_load --> Thr3D_F_post_recon_processing__build_frame_index
+  Thr3D_F_post_recon_processing__Reconstruction_load --> Thr3D_F_post_recon_processing__load_VGGT_O_predictions
+  Thr3D_F_post_recon_processing__build_frame_index --> Two2D_B_video_processing__available_frames
+  Thr3D_F_post_recon_processing__load_VGGT_O_predictions --> Thr3D_F_post_recon_processing__Reconstruction_load
+  Thr3D_F_post_recon_processing__load_VGGT_O_trace --> A_Config__ALL
+  Thr3D_F_post_recon_processing__load_VGGT_O_trace --> Thr3D_F_post_recon_processing__Reconstruction_load
+  Thr3D_F_post_recon_processing__load_VGGT_O_trace --> Thr3D_F_post_recon_processing__positions_to_frame_dict
+  Thr3D_F_post_recon_processing__load_VGGT_O_trace --> Thr3D_G_transforms_alignments__ortho_charts
+  Thr3D_F_post_recon_processing__load_VGGT_trace --> A_Config__ALL
+  Thr3D_F_post_recon_processing__load_VGGT_trace --> Thr3D_F_post_recon_processing__Reconstruction_load
+  Thr3D_F_post_recon_processing__load_VGGT_trace --> Thr3D_F_post_recon_processing__positions_to_frame_dict
+  Thr3D_F_post_recon_processing__load_VGGT_trace --> Thr3D_G_transforms_alignments__ortho_charts
+  Thr3D_F_post_recon_processing__load_cut3r_trace --> Thr3D_F_post_recon_processing__Reconstruction_load
+  Thr3D_F_post_recon_processing__load_cut3r_trace --> Thr3D_G_transforms_alignments__ortho_charts
+  Thr3D_F_post_recon_processing__load_cut3r_trace_v2 --> Thr3D_F_post_recon_processing__Reconstruction_load
+  Thr3D_F_post_recon_processing__load_cut3r_trace_v2 --> Thr3D_G_transforms_alignments__ortho_charts
+  Thr3D_F_post_recon_processing__load_lingbot_map_trace --> Thr3D_F_post_recon_processing__Reconstruction_load
+  Thr3D_F_post_recon_processing__load_lingbot_map_trace --> Thr3D_G_transforms_alignments__ortho_charts
+  Thr3D_F_post_recon_processing__load_megasam_trace --> A_Config__ALL
+  Thr3D_F_post_recon_processing__load_megasam_trace --> Thr3D_F_post_recon_processing__Reconstruction_load
+  Thr3D_F_post_recon_processing__load_megasam_trace --> Thr3D_F_post_recon_processing__positions_to_frame_dict
+  Thr3D_F_post_recon_processing__load_megasam_trace --> Thr3D_G_transforms_alignments__ortho_charts
+  Thr3D_F_post_recon_processing__load_reality_scan_trace --> Thr3D_G_transforms_alignments___rc_rotation_matrix
+  Thr3D_F_post_recon_processing__load_reality_scan_trace --> Thr3D_G_transforms_alignments__apply_cam0_frame
+  Thr3D_F_post_recon_processing__load_reality_scan_trace --> Thr3D_G_transforms_alignments__ortho_charts
+  Thr3D_F_post_recon_processing__positions_to_frame_dict --> Two2D_B_video_processing__available_frames
+  Thr3D_F_transpose_to_recon_objects__cut3r_to_reconstruction --> Thr3D_F_post_recon_processing__Reconstruction_load
+  Thr3D_F_transpose_to_recon_objects__cut3r_to_reconstruction --> Thr3D_F_transpose_to_recon_objects___as_hw
+  Thr3D_F_transpose_to_recon_objects__lingbot_map_to_reconstruction --> Thr3D_F_post_recon_processing__Reconstruction_load
+  Thr3D_F_transpose_to_recon_objects__lingbot_map_to_reconstruction --> Thr3D_F_transpose_to_recon_objects___as_hw
+  Thr3D_F_transpose_to_recon_objects__lingbot_map_to_reconstruction --> Thr3D_F_transpose_to_recon_objects___load_lowres_rgb_from_full
+  Thr3D_F_transpose_to_recon_objects__megasam_to_reconstruction --> Thr3D_F_post_recon_processing__Reconstruction_load
+  Thr3D_F_transpose_to_recon_objects__megasam_to_reconstruction --> Thr3D_F_post_recon_processing__build_frame_index
+  Thr3D_F_transpose_to_recon_objects__megasam_to_reconstruction --> Thr3D_F_transpose_to_recon_objects___as_nhw
+  Thr3D_F_transpose_to_recon_objects__vggt_plain_to_reconstruction --> Thr3D_F_post_recon_processing__Reconstruction_load
+  Thr3D_F_transpose_to_recon_objects__vggt_plain_to_reconstruction --> Thr3D_F_post_recon_processing__build_frame_index
+  Thr3D_F_transpose_to_recon_objects__vggt_plain_to_reconstruction --> Thr3D_F_transpose_to_recon_objects___as_nhw
+  Thr3D_F_transpose_to_recon_objects__vggt_plain_to_reconstruction --> Thr3D_F_transpose_to_recon_objects___load_lowres_rgb_from_full
+  Thr3D_G_transforms_alignments___rc_rotation_matrix --> Thr3D_G_transforms_alignments___rot_x
+  Thr3D_G_transforms_alignments___rc_rotation_matrix --> Thr3D_G_transforms_alignments___rot_y
+  Thr3D_G_transforms_alignments___rc_rotation_matrix --> Thr3D_G_transforms_alignments___rot_z
+  Thr3D_G_transforms_alignments___umeyama_finish --> Thr3D_G_transforms_alignments__ortho_charts
+  Thr3D_G_transforms_alignments__combine_transforms --> Thr3D_G_transforms_alignments__transform_RST
+  Thr3D_G_transforms_alignments__recon_to_recon_transform --> Thr3D_F_post_recon_processing__Reconstruction_cam_pos_dict
+  Thr3D_G_transforms_alignments__recon_to_recon_transform --> Thr3D_G_transforms_alignments__recon_to_recon_matcher
+  Thr3D_G_transforms_alignments__recon_to_recon_transform --> Thr3D_G_transforms_alignments__umeyama_align
+  Thr3D_G_transforms_alignments__umeyama_align --> Thr3D_G_transforms_alignments___umeyama_finish
+  Thr3D_G_transforms_alignments__umeyama_align --> Thr3D_G_transforms_alignments___umeyama_solve
+  Thr3D_G_transforms_alignments__umeyama_align_anchor --> Thr3D_G_transforms_alignments___umeyama_finish
+  Thr3D_G_transforms_alignments__umeyama_align_anchor --> Thr3D_G_transforms_alignments___umeyama_solve
+  Two2D_AX_gem_SAM_matcher__gem_person_targets_lookup --> A_Config__ALL
+  Two2D_AX_gem_SAM_matcher__load_SAM_dets --> A_Config__ALL
+  Two2D_AX_gem_SAM_matcher__match_gem_people_to_sam --> A_Config__ALL
+  Two2D_AX_gem_SAM_matcher__match_gem_people_to_sam --> Two2D_AX_gem_SAM_matcher__gem_box_to_xyxy
+  Two2D_AX_gem_SAM_matcher__match_gem_people_to_sam --> Two2D_AX_gem_SAM_matcher__gem_person_targets_lookup
+  Two2D_AX_gem_SAM_matcher__match_gem_people_to_sam --> Two2D_AX_gem_SAM_matcher__iou_xyxy
+  Two2D_AX_gem_SAM_matcher__match_gem_people_to_sam --> Two2D_AX_gem_SAM_matcher__load_SAM_dets
+  Two2D_AX_gem_SAM_matcher__match_gem_people_to_sam --> Two2D_AX_gem_SAM_matcher__sam_det_to_xyxy
+  Two2D_AX_gem_SAM_matcher__match_gem_people_to_sam --> Two2D_B_video_processing__video_dims
+  Two2D_AY_claude_crop_matcher___ask_sync --> Two2D_AY_claude_crop_matcher___ask
+  Two2D_AY_claude_crop_matcher__descriptor_targets --> A_Config__ALL
+  Two2D_AY_claude_crop_matcher__match_tracks_to_descriptors --> A_Config__ALL
+  Two2D_AY_claude_crop_matcher__match_tracks_to_descriptors --> Two2D_AY_claude_crop_matcher___ask_sync
+  Two2D_AY_claude_crop_matcher__match_tracks_to_descriptors --> Two2D_AY_claude_crop_matcher___match_prompt
+  Two2D_AY_claude_crop_matcher__match_tracks_to_descriptors --> Two2D_AY_claude_crop_matcher__descriptor_targets
+  Two2D_AY_claude_crop_matcher__match_tracks_to_descriptors --> Two2D_AY_claude_crop_matcher__write_masked_crops
+  Two2D_AY_claude_crop_matcher__write_masked_crops --> A_Config__ALL
+  Two2D_AY_claude_crop_matcher__write_masked_crops --> Two2D_AY_claude_crop_matcher___isolate
+  Two2D_AY_claude_crop_matcher__write_masked_crops --> Two2D_AY_claude_crop_matcher___mask_frames
+  Two2D_AY_claude_crop_matcher__write_masked_crops --> Two2D_AY_claude_crop_matcher___save_8bit
+  Two2D_AY_claude_crop_matcher__write_masked_crops --> Two2D_B_video_processing__frames_at_indices
+  Two2D_A_gemini__gemini_cache_video --> A_Config__ALL
+  Two2D_A_gemini__gemini_query_CSV_cached --> A_Config__ALL
+  Two2D_A_gemini_v02__draw_point_overlay --> Two2D_A_gemini_v02__get_box
+  Two2D_A_gemini_v02__gemini_cache_video --> A_Config__ALL
+  Two2D_A_gemini_v02__gemini_query_CSV_cached --> A_Config__ALL
+  Two2D_A_gemini_v02__gemini_vid_to_text --> Two2D_A_gemini_v02___deterministic_config
+  Two2D_A_gemini_v02__gemini_vid_to_text --> Two2D_A_gemini_v02___log_response_meta
+  Two2D_A_gemini_v02__gemini_vid_to_text --> Two2D_A_gemini_v02__draw_point_overlay
+  Two2D_A_gemini_v02__gemini_vid_to_text --> Two2D_A_gemini_v02__get_box
+  Two2D_A_gemini_v02__gemini_vid_to_text --> Two2D_B_video_processing__frames_at_times
+  Two2D_A_gemini_v03__draw_point_overlay --> Two2D_A_gemini_v03__get_box
+  Two2D_A_gemini_v03__gemini_cache_video --> A_Config__ALL
+  Two2D_A_gemini_v03__gemini_query_CSV_cached --> A_Config__ALL
+  Two2D_A_gemini_v03__gemini_vid_to_text --> Two2D_A_gemini_v03___deterministic_config
+  Two2D_A_gemini_v03__gemini_vid_to_text --> Two2D_A_gemini_v03___log_response_meta
+  Two2D_A_gemini_v03__gemini_vid_to_text --> Two2D_A_gemini_v03___strip_code_fence
+  Two2D_A_gemini_v03__gemini_vid_to_text --> Two2D_A_gemini_v03__draw_point_overlay
+  Two2D_A_gemini_v03__gemini_vid_to_text --> Two2D_A_gemini_v03__get_box
+  Two2D_A_gemini_v03__gemini_vid_to_text --> Two2D_B_video_processing__frames_at_times
+  Two2D_A_gemini_v03__query_from_description --> Two2D_A_gemini_v03___strip_code_fence
+  Two2D_B_video_processing__image_sequencer --> Two2D_B_video_processing___blur_score
+  Two2D_B_video_processing__image_sequencer --> Two2D_B_video_processing__seek_exact
+  Two2D_B_video_processing__video_creation_time --> Two2D_B_video_processing___probe_format
+  Two2D_B_video_processing__video_start_time --> Two2D_B_video_processing___probe_format
+  Two2D_B_video_processing__video_start_time --> Two2D_B_video_processing__video_creation_time
+  Two2D_C_Scoring__editor --> Two2D_C_Scoring__frame_prob_dist
+  Two2D_C_Scoring__frame_scoring --> Two2D_C_Scoring__framing_score
+  Two2D_C_Scoring__frame_scoring --> Two2D_C_Scoring__sharpness_score
+  Two2D_C_Scoring__frame_scoring --> Two2D_C_Scoring__size_score
+  Two2D_W_video_editor___concat_mezzanine_clips --> Two2D_W_video_editor___audio_duration
+  Two2D_W_video_editor___map_mezzanine_clip --> A_Config__ALL
+  Two2D_W_video_editor___mask_overlay_mezzanine_clip --> Two2D_W_video_editor___load_mask_bool
+  Two2D_W_video_editor___mask_overlay_mezzanine_clip --> Two2D_W_video_editor__apply_mask_overlay
+  Two2D_W_video_editor__assemble_paper_edit --> A_Config__ALL
+  Two2D_W_video_editor__assemble_paper_edit --> C_CSV_report__add_to_asset_list
+  Two2D_W_video_editor__assemble_paper_edit --> Two2D_B_video_processing__video_fps
+  Two2D_W_video_editor__assemble_paper_edit --> Two2D_W_video_editor___concat_mezzanine_clips
+  Two2D_W_video_editor__assemble_paper_edit --> Two2D_W_video_editor___map_mezzanine_clip
+  Two2D_W_video_editor__assemble_paper_edit --> Two2D_W_video_editor___mask_overlay_mezzanine_clip
+  Two2D_W_video_editor__assemble_paper_edit --> Two2D_W_video_editor___real_mezzanine_clip
+  Two2D_W_video_editor__assemble_paper_edit --> run_models_A_ROBOFLOW_SAM3___slugify_subject
+  Two2D_W_video_editor__find_all_cut_points --> A_Config__ALL
+  Two2D_W_video_editor__find_all_cut_points --> Two2D_B_video_processing__video_fps
+  Two2D_W_video_editor__find_all_cut_points --> Two2D_W_video_editor__find_cut_points
+  Two2D_W_video_editor__find_cut_points --> Two2D_W_video_editor__find_true_audio_span
+  Two2D_W_video_editor__mask_compositor --> A_Config__ALL
+  Two2D_W_video_editor__mask_compositor --> C_CSV_report__add_to_asset_list
+  Two2D_W_video_editor__mask_compositor --> Two2D_B_video_processing__video_fps
+  Two2D_W_video_editor__mask_compositor --> Two2D_W_video_editor___load_mask_bool
+  Two2D_W_video_editor__mask_compositor --> Two2D_W_video_editor__apply_mask_overlay
+  Two2D_W_video_editor__video_edit --> A_Config__ALL
+  Two2D_W_video_editor__video_edit --> C_CSV_report__add_to_asset_list
+  Two2D_W_video_editor__video_edit --> Two2D_B_video_processing__video_fps
+  Two2D_W_video_editor__video_overlay_edit --> A_Config__ALL
+  Two2D_W_video_editor__video_overlay_edit --> C_CSV_report__add_to_asset_list
+  Two2D_W_video_editor__video_overlay_edit --> Two2D_B_video_processing__video_fps
+  Two2D_W_video_editor__video_overlay_edit --> Two2D_W_video_editor___load_mask_bool
+  Two2D_W_video_editor__video_overlay_edit --> Two2D_W_video_editor__apply_mask_overlay
+  Two2D_W_video_editor__video_overlay_edit --> Two2D_W_video_editor__mask_frame_range
+  V_text_summary__gemini_final_report --> A_Config__ALL
+  V_text_summary__gemini_final_report --> C_CSV_report__add_to_report
+  V_text_summary__gemini_final_report --> Two2D_A_gemini__gemini_query_CSV_cached
+  W_populate_pptx__dispatch_chart --> A_Config__ALL
+  W_populate_pptx__dispatch_chart --> W_populate_pptx__update_scatter
+  W_populate_pptx__populate --> A_Config__ALL
+  W_populate_pptx__populate --> W_populate_pptx___load_csv_dict
+  W_populate_pptx__populate --> W_populate_pptx___renumber_person_keys
+  W_populate_pptx__populate --> W_populate_pptx__add_hyperlink
+  W_populate_pptx__populate --> W_populate_pptx__delete_slide
+  W_populate_pptx__populate --> W_populate_pptx__dispatch_chart
+  W_populate_pptx__populate --> W_populate_pptx__replace_image
+  W_populate_pptx__populate --> W_populate_pptx__replace_video
+  W_populate_pptx__populate --> W_populate_pptx__replace_video_thumb
+  W_populate_pptx__populate --> W_populate_pptx__set_text
+  W_populate_pptx__populate --> W_populate_pptx__substitute_placeholders
+  W_populate_pptx__substitute_placeholders --> W_populate_pptx__set_text
+  W_populate_pptx__update_scatter --> W_populate_pptx___col_letter
+  W_populate_pptx__update_scatter --> W_populate_pptx___populate_num_cache
+  W_populate_pptx__update_scatter --> W_populate_pptx___populate_str_cache
+  W_populate_pptx__update_scatter --> W_populate_pptx___update_range_end_row
+  claude_agent_constitution_view__constitution_view --> claude_agent_constitution_view__parse_rules
+  claude_agent_constitution_view__print_rules --> claude_agent_constitution_view__parse_rules
+  claude_agent_constitution_view__producer_constitution --> claude_agent_constitution_view__constitution_view
+  claude_agent_producer_agent_execution___run_producer_agent_async --> A_Config__ALL
+  claude_agent_producer_agent_execution___run_producer_agent_async --> claude_agent_constitution_view__producer_constitution
+  claude_agent_producer_agent_execution__build_producer_prompt_draft1 --> A_Config__ALL
+  claude_agent_producer_agent_execution__build_producer_prompt_draft2 --> A_Config__ALL
+  claude_agent_producer_agent_execution__build_producer_prompt_revision --> A_Config__ALL
+  claude_agent_producer_agent_execution__run_producer_agent --> A_Config__ALL
+  claude_agent_producer_agent_execution__run_producer_agent --> claude_agent_producer_agent_execution___make_logger
+  claude_agent_producer_agent_execution__run_producer_agent --> claude_agent_producer_agent_execution___run_producer_agent_async
+  claude_agent_render_paper_edit___beat_block --> claude_agent_render_paper_edit___esc
+  claude_agent_render_paper_edit___toc_row --> claude_agent_render_paper_edit___esc
+  claude_agent_render_paper_edit__build_meeting_requests --> claude_agent_render_paper_edit__paper_edit_path
+  claude_agent_render_paper_edit__build_tracking_requests --> claude_agent_render_paper_edit___merge_spans
+  claude_agent_render_paper_edit__build_tracking_requests --> claude_agent_render_paper_edit__paper_edit_path
+  claude_agent_render_paper_edit__derive_and_save_flags --> claude_agent_render_paper_edit__derive_flags
+  claude_agent_render_paper_edit__derive_and_save_flags --> claude_agent_render_paper_edit__paper_edit_path
+  claude_agent_render_paper_edit__derive_flags --> claude_agent_render_paper_edit___beat_flags
+  claude_agent_render_paper_edit__derive_flags --> claude_agent_render_paper_edit__paper_edit_path
+  claude_agent_render_paper_edit__paper_edit_path --> A_Config__ALL
+  claude_agent_render_paper_edit__recon_window_frames --> A_Config__ALL
+  claude_agent_render_paper_edit__recon_window_frames --> Two2D_B_video_processing__video_fps
+  claude_agent_render_paper_edit__recon_window_frames --> claude_agent_render_paper_edit__paper_edit_path
+  claude_agent_render_paper_edit__render_and_save --> claude_agent_render_paper_edit__paper_edit_path
+  claude_agent_render_paper_edit__render_and_save --> claude_agent_render_paper_edit__render_html
+  claude_agent_render_paper_edit__render_html --> claude_agent_render_paper_edit___beat_block
+  claude_agent_render_paper_edit__render_html --> claude_agent_render_paper_edit___esc
+  claude_agent_render_paper_edit__render_html --> claude_agent_render_paper_edit___toc_row
+  run_models_A_LOCAL_SAM3___run_sam3_tracking_local --> A_Config__ALL
+  run_models_A_LOCAL_SAM3___run_sam3_tracking_local --> D_2d_analysis__contiguous_durations
+  run_models_A_LOCAL_SAM3___run_sam3_tracking_local --> run_models_A_LOCAL_SAM3___track_span
+  run_models_A_LOCAL_SAM3___run_sam3_tracking_local --> run_models_A_LOCAL_SAM3__get_predictor
+  run_models_A_LOCAL_SAM3___run_sam3_tracking_local --> run_models_A_LOCAL_SAM3__release_predictor
+  run_models_A_LOCAL_SAM3___run_sam3_tracking_local --> run_models_A_ROBOFLOW_SAM3___slugify_subject
+  run_models_A_LOCAL_SAM3___run_sam3_tracking_local --> run_models_A_ROBOFLOW_SAM3__make_span_clip
+  run_models_A_ROBOFLOW_SAM3___dispatch_sam3_tracking --> run_models_A_LOCAL_SAM3___run_sam3_tracking_local
+  run_models_A_ROBOFLOW_SAM3___dispatch_sam3_tracking --> run_models_A_ROBOFLOW_SAM3___run_sam3_tracking
+  run_models_A_ROBOFLOW_SAM3___run_sam3_tracking --> A_Config__ALL
+  run_models_A_ROBOFLOW_SAM3___run_sam3_tracking --> D_2d_analysis__contiguous_durations
+  run_models_A_ROBOFLOW_SAM3___run_sam3_tracking --> run_models_A_ROBOFLOW_SAM3___slugify_subject
+  run_models_A_ROBOFLOW_SAM3___run_sam3_tracking --> run_models_A_ROBOFLOW_SAM3__decode_mask_from_detection
+  run_models_A_ROBOFLOW_SAM3___run_sam3_tracking --> run_models_A_ROBOFLOW_SAM3__extract_track_id
+  run_models_A_ROBOFLOW_SAM3___run_sam3_tracking --> run_models_A_ROBOFLOW_SAM3__make_span_clip
+  run_models_A_ROBOFLOW_SAM3___run_sam3_tracking --> run_models_A_ROBOFLOW_SAM3__unwrap_predictions
+  run_models_A_ROBOFLOW_SAM3__frame_index_at_time --> run_models_A_ROBOFLOW_SAM3__frame_pts_times
+  run_models_A_ROBOFLOW_SAM3__make_span_clip --> run_models_A_ROBOFLOW_SAM3__find_preceding_keyframe_s
+  run_models_A_ROBOFLOW_SAM3__make_span_clip --> run_models_A_ROBOFLOW_SAM3__frame_index_at_time
+  run_models_A_ROBOFLOW_SAM3__run_sam3_manual --> run_models_A_ROBOFLOW_SAM3___dispatch_sam3_tracking
+  run_models_A_ROBOFLOW_SAM3__track_subject_sam3 --> A_Config__ALL
+  run_models_A_ROBOFLOW_SAM3__track_subject_sam3 --> claude_agent_render_paper_edit__build_tracking_requests
+  run_models_A_ROBOFLOW_SAM3__track_subject_sam3 --> run_models_A_ROBOFLOW_SAM3___dispatch_sam3_tracking
+  run_models_A_YOLO_seg___detect_in_frame --> Two2D_B_video_processing__seek_exact
+  run_models_A_YOLO_seg___expand_bounds --> run_models_A_YOLO_seg___detect_in_frame
+  run_models_A_YOLO_seg___run_tracking --> Two2D_B_video_processing__seek_exact
+  run_models_A_YOLO_seg__track_subject_masks --> run_models_A_YOLO_seg___get_subject_ids
+  run_models_A_YOLO_seg__track_subject_masks --> run_models_A_YOLO_seg___run_tracking
+  run_models_A_YOLO_seg__track_subject_masks_from_hints --> run_models_A_YOLO_seg___expand_bounds
+  run_models_A_YOLO_seg__track_subject_masks_from_hints --> run_models_A_YOLO_seg___get_subject_ids
+  run_models_A_YOLO_seg__track_subject_masks_from_hints --> run_models_A_YOLO_seg___run_tracking
+  run_models_B_lingbot_map__load_lingbot_frame --> Thr3D_F_post_recon_processing__Reconstruction_load
+  run_models_B_lingbot_map__load_lingbot_frame --> run_models_B_lingbot_map___frame_npz_path
+  run_models_B_lingbot_map__main --> run_models_B_lingbot_map___import_lingbot_demo
+  run_models_B_lingbot_map__run_lingbot_map --> A_Config__ALL
+  run_models_B_lingbot_map__run_lingbot_map --> run_models_B_lingbot_map___import_lingbot_demo
+  run_models_B_lingbot_map__run_lingbot_map --> run_models_B_lingbot_map__save_lingbot_frame
+  run_models_B_lingbot_map__save_lingbot_frame --> run_models_B_lingbot_map___frame_npz_path
+  run_models_E_VGGT_O_shards__run_vggt_omega_shards_batched --> run_models_E_VGGT_O_shards__run_vggt_omega_shards
+  run_models_E_VGGT_omega__run_vggt_omega --> Thr3D_F_post_recon_processing__Reconstruction_load
+  run_models_E_VGGT_omega__run_vggt_omega --> run_models_E_VGGT_omega___unproject_depth_map_to_point_map
+  run_models_E_cut3r_recon___export_outputs --> run_models_E_cut3r_recon___save_ply
+  run_models_E_cut3r_recon__run_cut3r --> run_models_E_cut3r_recon___export_outputs
+  run_models_E_cut3r_recon__run_cut3r --> run_models_E_cut3r_recon___make_raymap
+  run_models_E_cut3r_recon__run_cut3r --> run_models_E_cut3r_recon___third_person_c2w
+  run_models_E_megasam_recon___run --> run_models_E_megasam_recon___clean_env
+  run_models_E_megasam_recon__run_megasam --> A_Config__ALL
+  run_models_E_megasam_recon__run_megasam --> run_models_E_megasam_recon___clean_env
+  run_models_E_megasam_recon__run_megasam --> run_models_E_megasam_recon___run
+  run_models_E_megasam_vis__visualise_megasam --> Thr3D_F_post_recon_processing__Reconstruction_load
+  run_models_E_realityscan_recon__run_realityscan --> run_models_E_realityscan_recon___run
+  run_models_spike_sam3_box_seed__main --> run_models_A_ROBOFLOW_SAM3__find_preceding_keyframe_s
+  run_models_spike_sam3_box_seed__main --> run_models_A_ROBOFLOW_SAM3__make_span_clip
+  run_models_spike_sam3_box_seed__main --> run_models_spike_sam3_box_seed__box_2d_to_corners
+  run_models_spike_sam3_local__main --> run_models_A_ROBOFLOW_SAM3__make_span_clip
+  style A_Config__ALL fill:#ffe9b3,stroke:#c99700

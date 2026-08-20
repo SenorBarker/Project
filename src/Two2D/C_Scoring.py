@@ -48,12 +48,23 @@ def frame_scoring(video_path, frame_range='all', ROIs=None):
     frame_size = np.ones((h, w), dtype=np.uint8)
 
     scores = {}
-    for frame_idx in frame_range:
+    # Sequential pass, counting decodes. Seeking per frame lands on a keyframe, so
+    # ROIs[frame_idx] would be scored against a frame the subject has moved in.
+    remaining = set(frame_range)
+    frame_idx = -1
+    while remaining:
+        ret, frame = cap.read()
+        if not ret:
+            print(f"video ended with {len(remaining)} frame(s) unscored")
+            break
+        frame_idx += 1
+        if frame_idx not in remaining:
+            continue
+        remaining.discard(frame_idx)
+
         if frame_idx%100 == 0:
             print(f"scoring frame {frame_idx}")
         ROI = ROIs[frame_idx] if ROIs is not None else None
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-        ret, frame = cap.read()
 
         sharpness_ROI   = sharpness_score(frame, ROI) if ROI is not None else 0
         sharpness_image = sharpness_score(frame, frame_size)
@@ -192,6 +203,11 @@ def editor(cam_scores: dict, time_window: int, cutaway_gap: int):
     default_cam = max(mean_quality, key=mean_quality.get)
     
     # per frame pdf
+    # list index IS the frame number below (hold_until = i + time_window), so
+    # every camera must be dense and equally long -- a short/ragged list would
+    # silently shift one camera's frames against the others.
+    lengths = {cam: len(scores) for cam, scores in cam_scores.items()}
+    assert len(set(lengths.values())) == 1, f"ragged cam_scores, index != frame: {lengths}"
     n_frames = len(next(iter(cam_scores.values())))
     per_frame_pdf = []
     for i in range(n_frames):

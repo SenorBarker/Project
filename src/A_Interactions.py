@@ -7,6 +7,7 @@ import torch
 
 from ultralytics import YOLO
 from C_CSV_report import add_to_report
+from Two2D.B_video_processing import seek_exact
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 MODEL_PATH = "Models/yolo_checkpoints/yolo26l-seg.pt"
@@ -60,7 +61,7 @@ def subject_selector(
         # one seek + sequential decode over the whole range, instead of a seek per
         # candidate — cap.set() replays from the last keyframe every time, so
         # seeking to scattered candidate frames re-decodes the same span repeatedly
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start_f)
+        seek_exact(cap, start_f)
         frames_by_idx = {}
         for candidate in range(start_f, end_f + 1):
             ret, frame = cap.read()

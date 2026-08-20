@@ -21,7 +21,7 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.oxml.ns import qn
 import openpyxl
 
-from A_Config import case_dir, report_path, assets_dir, asset_name
+from A_Config import case_dir, report_path, asset_list_path, assets_dir, asset_name
 
 
 def set_text(shape, value):
@@ -225,6 +225,42 @@ def delete_slide(prs, slide):
             break
 
 
+def _load_csv_dict(path):
+    d = {}
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        for row in reader:
+            if len(row) < 2:
+                continue
+            key, value = row[0].strip(), row[1].strip()
+            if key and value:
+                d[key] = value
+    return d
+
+
+PERSON_KEY_RE = re.compile(r"^person-(\d+)_(.+)$")
+
+
+def _renumber_person_keys(report):
+    '''person-N is Gemini's own person_id numbering -- stable per person
+    within a run, and (per Gemini reading frames in order) already in
+    first-appearance order, but not necessarily dense: a video's beats
+    might only ever reference person-2 and person-5. Renumber to a dense
+    1, 2, 3... run, preserving that same relative order, so a template can
+    pre-author fixed "person-1_...", "person-2_..." slots regardless of
+    which raw ids a given video happens to produce.'''
+    raw_ids = sorted({int(m.group(1)) for k in report if (m := PERSON_KEY_RE.match(k))})
+    id_map = {raw: i + 1 for i, raw in enumerate(raw_ids)}
+
+    renumbered = {}
+    for key, value in report.items():
+        m = PERSON_KEY_RE.match(key)
+        if m:
+            key = f"person-{id_map[int(m.group(1))]}_{m.group(2)}"
+        renumbered[key] = value
+    return renumbered
+
+
 def populate(report_template):
 
     output_path = case_dir() / "100_Powerpoint" / f"{asset_name()}.pptx"
@@ -237,15 +273,13 @@ def populate(report_template):
     #objects actually present in this template and look up their value,
     #rather than looping every report row and asking "is there a shape for
     #this" (which warned on every key the template simply doesn't carry).
-    report = {}
-    with open(report_path(), newline="", encoding="utf-8") as f:
-        reader = csv.reader(f)
-        for row in reader:
-            if len(row) < 2:
-                continue
-            key, value = row[0].strip(), row[1].strip()
-            if key and value:
-                report[key] = value
+    #report + asset list are two separate CSVs upstream (data/decisions vs.
+    #produced files) but the pptx template doesn't care which one a key came
+    #from, so merge them back into one lookup here.
+    report = _load_csv_dict(report_path())
+    if asset_list_path().exists():
+        report.update(_load_csv_dict(asset_list_path()))
+    report = _renumber_person_keys(report)
 
     empty_slides = []
     for slide in prs.slides:

@@ -12,8 +12,8 @@ import matplotlib.pyplot as plt
 
 from Q_GPS_processing import csv_to_GPS_dict, android_movie_GPS
 from Thr3D.F_post_recon_processing import build_frame_index, load_reality_scan_trace
-from C_CSV_report import add_to_report
-from A_Config import assets_dir, asset_name, report_path, to_report_path
+from C_CSV_report import add_to_report, add_to_asset_list
+from A_Config import assets_dir, asset_name, report_path, to_report_path, length_units
 from Thr3D.G_transforms_alignments import umeyama_align, ortho_charts , transform_RST   , umeyama_align_anchor
 
 #real-world lat long into metres, relative to the first item as origin (0,0,0).
@@ -62,7 +62,11 @@ def GPS_camerapose_matcher(GPS_dict, cam_pos_dict, max_frame_gap=150):#150 is 5s
     matched = {frame_idx: cam for cam, (_, frame_idx) in winners.items()}#reverse back to GPS indices: camindices
 
     GPS_locs, object_locs = [], []
-    for frame_idx, latlon in GPS_dict.items():
+    # sorted, not insertion order: csv_to_GPS_dict builds GPS_dict straight from
+    # CSV row order, so anything reading GPS_locs as a *path* (trajectory_length
+    # in the cam-pose sweeps) would zigzag on an out-of-order row. umeyama_align
+    # is order-invariant, so this is free for the alignment itself.
+    for frame_idx, latlon in sorted(GPS_dict.items()):
         if frame_idx not in matched:
             print(f"GPS anchor at frame {frame_idx} dropped: out of range or lost to a closer anchor.")
             continue
@@ -84,6 +88,12 @@ def _speed_direction_single(positions_dict, fps):
     t = np.array(sorted(positions_dict.keys()))#time
     pos = np.array([positions_dict[k] for k in sorted(positions_dict.keys())])#position
 
+    # a subject with no matched track has no positions -- NaNs, so it still
+    # plots (as a gap) instead of taking the whole group down
+    if pos.ndim != 2 or len(pos) < 3:
+        nan = np.full(len(t), np.nan)
+        return t, nan, nan, nan
+
     t_0 = t[:-2]
     t_2 = t[2:]
 
@@ -96,6 +106,8 @@ def _speed_direction_single(positions_dict, fps):
     delta_p = np.linalg.norm(delta_p, axis=1)
     vel = delta_p / delta_t  #metres per frame
     mps = vel * fps #metres/second
+    
+
     kmh = mps /1000 * 60* 60 #km/h
 
     mps = np.pad(mps, (1, 1), constant_values=np.nan)
@@ -106,24 +118,35 @@ def _speed_direction_single(positions_dict, fps):
 
 
 def speed_direction(positions_dicts, fps):
-    '''positions_dicts is a single time->position dict, or a (camera, subject)
-    pair of them -- either way each is run through the same speed/heading
-    maths, then plotted together on shared axes (camera blue, subject red).
-    Saves the plots and appends to the report CSV for whichever case is
-    currently active (see A_Config.set_case).'''
-    single = isinstance(positions_dicts, dict)
-    if single:
-        positions_dicts = (positions_dicts,)
+    '''positions_dicts is one of:
+      - a single time->position dict
+      - a sequence of them, labelled camera, subject, subject_2...
+      - a {name: time->position dict} mapping, which keeps the real subject slugs
+    Each is run through the same speed/heading maths, then plotted together on
+    shared axes. Saves the plots and appends to the report CSV for whichever case
+    is currently active (see A_Config.set_case).'''
+    named = None
+    if isinstance(positions_dicts, dict):
+        first = next(iter(positions_dicts.values()), None)
+        if isinstance(first, dict):          # {name: positions} -- multi, keep the names
+            named = list(positions_dicts)
+            positions_dicts = list(positions_dicts.values())
+            single = False
+        else:                                # a bare positions dict
+            positions_dicts = (positions_dicts,)
+            single = True
+    else:
+        single = False
 
-    labels = ["camera", "subject"]
-    colors = ["tab:blue", "tab:red"]
+    labels = named or (["camera", "subject"] + [f"subject_{i}" for i in range(2, len(positions_dicts))])
+    colors = plt.cm.tab10(np.linspace(0, 1, 10))[:len(positions_dicts)]
     results = [_speed_direction_single(pd_, fps) for pd_ in positions_dicts]
 
     plt.figure()
     for (t, mps, kmh, heading), label, color in zip(results, labels, colors):
         plt.scatter(t, mps, color=color, label=label)
     plt.xlabel("time")
-    plt.ylabel("velocity (m/s)")
+    plt.ylabel(f"velocity ({length_units()}/s)")
     plt.title("speed vs time")
     plt.legend()
     outpath = assets_dir() / f"{asset_name()}_speed_graph.png"
@@ -140,7 +163,27 @@ def speed_direction(positions_dicts, fps):
     ax.legend()
 
     metrics = [(mps, kmh, heading) for (_, mps, kmh, heading) in results]
-    add_to_report( {
+
+    #per-mover rows -- the ends are padded with NaN, and net heading is first-to-last
+    #displacement, not the mean of the per-frame headings (which averages wrongly across
+    #the 0/360 wrap). A mover with no matched track reaches here as an empty dict and an
+    #empty mps, so every row below has to survive having nothing to average: nanmean/nanmax
+    #warn on an all-NaN slice and nanmax is a hard error on a zero-size one, hence the
+    #explicit finite-only selection rather than leaving it to NaN maths.
+    speed_report = {"{{speed_units}}": f"{length_units()}/s"}
+    for (t, mps, kmh, heading), label, pd_ in zip(results, labels, positions_dicts):
+        #first-to-last of the FINITE rows -- a dict can start or end on NaN
+        finite     = [f for f in sorted(pd_) if np.isfinite(np.asarray(pd_[f])).all()]
+        net        = (np.asarray(pd_[finite[-1]]) - np.asarray(pd_[finite[0]])
+                      if finite else np.full(3, np.nan))
+        finite_mps = np.asarray(mps)[np.isfinite(mps)]
+        speed_report[f"{{{{{label}_speed_mean}}}}"]   = float(finite_mps.mean()) if finite_mps.size else np.nan
+        speed_report[f"{{{{{label}_speed_max}}}}"]    = float(finite_mps.max())  if finite_mps.size else np.nan
+        speed_report[f"{{{{{label}_heading_net}}}}"]  = float(np.degrees(np.arctan2(net[0], net[2])) % 360)
+        speed_report[f"{{{{{label}_distance_net}}}}"] = float(np.linalg.norm(net))
+    add_to_report(speed_report)
+
+    add_to_asset_list( {
         "speed_graph"  : graph_path
     })
         

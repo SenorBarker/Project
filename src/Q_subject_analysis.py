@@ -12,7 +12,7 @@ import subprocess
 import cv2
 import numpy as np
 import pandas as pd
-from A_Config import report_path
+from A_Config import report_path, length_units, MASK_NAME_FMT
 from C_CSV_report import add_to_report
 from Q_GPS_processing import android_movie_GPS
 from Q_Metric_georeferencing import  metres_to_latlong
@@ -38,42 +38,143 @@ def subject_model_positions(recon, masks_dir):
     return subject_positions
 
 
-def meeting_calculator(sub_real_dict, cam_poses_realworld_dict, lat_0, lon_0):
-    '''Returns dict of info about when camera and subject were closest together -- i.e. the incident happened.
+def meeting_calculator(A_real_dict, A_dict_entry, B_real_dict,B_dict_entry, lat_0= None, lon_0 = None, B_is_camera=True):
+    '''Returns dict of info about when movers A and B were closest together -- i.e. the incident happened.
+    B is the camera by default; pass B_is_camera=False for a subject-vs-subject pair.
     Also appends that info straight to the report CSV.'''
-    sub_frames = np.array(sorted(sub_real_dict.keys()))
-    sub_pos    = np.array([sub_real_dict[f] for f in sub_frames])              # (N,3)
+    if B_is_camera:
+        A_frames = np.array(sorted(A_real_dict.keys()))
+        A_pos    = np.array([A_real_dict[f] for f in A_frames])              # (N,3)
 
-    cam_frames = np.array(sorted(cam_poses_realworld_dict.keys()))
-    cam_pos    = np.array([cam_poses_realworld_dict[f] for f in cam_frames])   # (M,3)
+        B_frames = np.array(sorted(B_real_dict.keys()))
+        B_pos    = np.array([B_real_dict[f] for f in B_frames])              # (M,3)
 
-    # each subject frame -> its nearest available camera frame (the two frame sets don't line up 1:1)
-    nearest_idx        = np.array([np.argmin(np.abs(cam_frames - f)) for f in sub_frames])
-    matched_cam_pos     = cam_pos[nearest_idx]
-    matched_cam_frames  = cam_frames[nearest_idx]
+        # each A frame -> its nearest available camera frame (the two frame sets don't line up 1:1)
+        nearest_idx      = np.array([np.argmin(np.abs(B_frames - f)) for f in A_frames])
+        matched_B_pos    = B_pos[nearest_idx]
+        matched_B_frames = B_frames[nearest_idx]
+    else:
+        # two subjects: both keyed on the same recon frames, so only frames they're BOTH
+        # present in can be compared -- nearest-matching would pair a subject against one
+        # who'd already left and report a meeting that never happened
+        both             = sorted(set(A_real_dict) & set(B_real_dict))
+        A_frames         = np.array(both)
+        A_pos            = np.array([A_real_dict[f] for f in both])
+        matched_B_pos    = np.array([B_real_dict[f] for f in both])
+        matched_B_frames = A_frames
 
-    distances = np.linalg.norm(sub_pos - matched_cam_pos, axis=1)
+    distances = np.linalg.norm(A_pos - matched_B_pos, axis=1)
     distances[np.isnan(distances)] = np.inf   # ignore frames with no valid subject mask
 
-    meet_i         = np.argmin(distances)#index of meet
-    meet_frame     = sub_frames[meet_i] #frame of meet
-    meet_cam_frame = matched_cam_frames[meet_i] #cam frame of meet - may be different
+    meet_i       = np.argmin(distances)#index of meet
+    meet_frame   = A_frames[meet_i] #frame of meet
+    meet_B_frame = matched_B_frames[meet_i] #B's frame at the meet - may be different
     if lat_0:
-        meet_lat_lon, _ = metres_to_latlong(matched_cam_pos[meet_i:meet_i + 1], lat_0, lon_0) # position of cam
+        meet_lat_lon, _ = metres_to_latlong(matched_B_pos[meet_i:meet_i + 1], lat_0, lon_0) # position of B
         meeting_lat_lon = tuple(float(v) for v in meet_lat_lon[0])
+
     else:
         meeting_lat_lon = (None, None)
 
+    #x=east/west, z=north/south -- the map plane; y (up) dropped. Origin is cam 0 either
+    #way; only {{length_units}} says whether these are metres or raw model units
+    meeting_xz = (float(matched_B_pos[meet_i][0]), float(matched_B_pos[meet_i][2]))
+
+    #pair goes in the KEY -- add_to_report overwrites by key, so pair 2 would eat pair 1
+    pair = f"{A_dict_entry}_vs_{B_dict_entry}"
     meeting_report = {
-        "meeting_frame"      : float(meet_frame), #frame subject closest to cam
-        "meeting_cam_frame"  : float(meet_cam_frame), #frame cam closest to subject (they don't match)
-        "meeting_lat_lon"    : meeting_lat_lon,
-        "{{meeting_distance_m}}" : float(distances[meet_i]),
+        f"{pair}_meeting_frame"            : float(meet_frame),    #frame A closest to B
+        f"{pair}_meeting_B_frame"          : float(meet_B_frame),  #B's frame at that moment (they don't match)
+        f"{pair}_meeting_lat_lon"          : meeting_lat_lon,
+        f"{pair}_meeting_xz"               : meeting_xz,
+        f"{{{{{pair}_meeting_distance}}}}" : float(distances[meet_i]),
+        "{{length_units}}"                 : length_units(),   # "m" only when GPS data exists, else raw model units
         # needs video_path/fps (time-of-day) and multi-frame velocity (travel direction) -- not wired in yet
-        "{{camera_direction}}"   : None,
+        "{{camera_direction}}"             : None,
     }
     add_to_report(meeting_report)
     return meeting_report
+
+
+def contact_frames(recon, A_masks_dir, B_masks_dir, touch_px=2,
+                   skip_depthels=1, max_depthels=6, depth_tol=0.05):
+    '''Are A and B touching, per frame? Camera space, no unprojection.
+    1) do the masks abut (mask res, so a thin sword survives)
+    2) no -> not touching, true even if depth is broken
+    3) yes -> depth profile either side of the seam decides touching vs occlusion.
+
+    The seam itself is never measured -- those depthels are mixed pixels and a
+    mislabelled mask edge sits there too. Instead each side's depth is binned by
+    distance from the seam, a line is fitted to the clean bins, and both are
+    extrapolated IN. Real abutment -> the two intercepts agree. A bad fit means
+    the mask isn't following a surface, which is its own answer.
+
+    skip_depthels: bins nearer the seam than this are assumed contaminated.
+    Returns {frame: {..., "A_profile", "B_profile"}} -- profiles are {bin: depth} for plotting.'''
+    frame_keys = sorted(recon.frame_to_row, key=recon.frame_to_row.get)
+    depths     = recon.preds["depth"].cpu().numpy()
+    h, w       = depths.shape[1:]
+
+    def _profile(dist_lo, mask_lo, depth):
+        '''median depth per depthel-distance bin, for one side of the seam'''
+        prof = {}
+        for b in range(skip_depthels, max_depthels + 1):
+            sel = mask_lo & (np.round(dist_lo) == b) & (depth != 0)
+            if sel.sum() >= 3:                        #need a few pixels to trust the median
+                prof[b] = float(np.median(depth[sel]))
+        return prof
+
+    def _extrapolate(prof):
+        '''fit depth vs distance, return (depth at the seam, fit residual)'''
+        if len(prof) < 2:
+            return None, None
+        x, y = np.array(sorted(prof)), np.array([prof[k] for k in sorted(prof)])
+        slope, intercept = np.polyfit(x, y, 1)
+        return float(intercept), float(np.abs(y - (slope * x + intercept)).max())
+
+    out = {}
+    for row, f in enumerate(frame_keys):
+        A = cv2.imread(str(Path(A_masks_dir) / MASK_NAME_FMT.format(f)), cv2.IMREAD_GRAYSCALE)
+        B = cv2.imread(str(Path(B_masks_dir) / MASK_NAME_FMT.format(f)), cv2.IMREAD_GRAYSCALE)
+        if A is None or B is None:
+            continue
+        A, B = A > 0, B > 0
+        if not A.any() or not B.any():
+            continue
+
+        #square centred kernel: side 2r+1 grows the mask by r px all round. (n,)*2 is (n,n)
+        touch_k = np.ones((touch_px * 2 + 1,) * 2, np.uint8)
+        abut = cv2.dilate(A.astype(np.uint8), touch_k).astype(bool) & \
+               cv2.dilate(B.astype(np.uint8), touch_k).astype(bool)
+        if not abut.any():
+            continue                                   #steps 1+2: not touching, done
+
+        #distance from the OTHER mask, in maskels, for every pixel
+        dist_to_B = cv2.distanceTransform((~B).astype(np.uint8), cv2.DIST_L2, 3)
+        dist_to_A = cv2.distanceTransform((~A).astype(np.uint8), cv2.DIST_L2, 3)
+
+        scale = A.shape[0] / h                         #maskels per depthel
+        to_lo = lambda m: cv2.resize(m.astype(np.float32), (w, h), interpolation=cv2.INTER_NEAREST_EXACT)
+
+        depth   = depths[row]
+        A_prof  = _profile(to_lo(dist_to_B) / scale, to_lo(A) > 0.5, depth)
+        B_prof  = _profile(to_lo(dist_to_A) / scale, to_lo(B) > 0.5, depth)
+        A_seam, A_res = _extrapolate(A_prof)
+        B_seam, B_res = _extrapolate(B_prof)
+        if A_seam is None or B_seam is None:           #not enough clean bins, can't judge
+            continue
+
+        gap = abs(A_seam - B_seam)
+        out[int(f)] = {
+            "abut_px"  : int(abut.sum()),
+            "depth_gap": float(gap),
+            "front"    : "A" if A_seam < B_seam else "B",
+            "contact"  : bool(gap <= depth_tol * min(A_seam, B_seam)),  #fraction -> scale-free
+            "fit_resid": (A_res, B_res),               #big -> mask isn't following a surface
+            "A_profile": A_prof,
+            "B_profile": B_prof,
+        }
+    return out
 
 
 def subject_direction(sub_real_dict):
@@ -116,10 +217,10 @@ def find_mask_centroids_in_model_space(subject_recon,
 
     computes rolling average by convolving 
 
-    Also returns depth_spread_model: the confidence-weighted depth spread (std) under
+    Also returns spread_framecam_ray: the confidence-weighted depth spread (std) under
     the mask, as a vector in model space along that frame's own camera ray -- not a bare
     number, since each frame's ray points a different way once rotated into model space.
-    centroid +/- depth_spread_model is the "subject is kinda around this blob, stretched
+    centroid +/- spread_framecam_ray is the "subject is kinda around this blob, stretched
     along the sightline" envelope, not an exact point.
     '''
     #subject centroids found and transformed into model space
@@ -135,7 +236,7 @@ def find_mask_centroids_in_model_space(subject_recon,
     #treat missing files as an empty mask instead of letting cv2.resize crash on it.
     mask_imgs = [cv2.imread(str(Path(masks_dir) / MASK_NAME_FMT.format(f)), cv2.IMREAD_GRAYSCALE) for f in frame_keys]
     masks = np.stack([
-        cv2.resize(img, (w, h), interpolation=cv2.INTER_NEAREST) > 0 if img is not None else np.zeros((h, w), dtype=bool)
+        cv2.resize(img, (w, h), interpolation=cv2.INTER_NEAREST_EXACT) > 0 if img is not None else np.zeros((h, w), dtype=bool)
         for img in mask_imgs
     ])   # (N,h,w) bool, resized to the depth's own native resolution -- no bilateral upsampling
     ys, xs = np.indices((h, w))   # ys: row-index grid, xs: col-index grid (np.indices order)
@@ -146,12 +247,12 @@ def find_mask_centroids_in_model_space(subject_recon,
     # confs - 1: depth_conf is floored at 1.0, not 0 -- subtracting the floor gives
     # garbage pixels zero weight instead of the ~20% pull raw confs would give them.
     weights     = masks * (confs - 1) * (depths != 0)
+    #key PARAMETER HERE!
     weight_sums = weights.sum(axis=(1, 2))
     valid       = weight_sums > 0
 
     # 2) CENTROID -- confidence-weighted mean pixel (col,row) and mean depth (centroid_depth) under the mask
     #for fr in range(0,RA):
-
     #get totals for each dimension, every frame at once
     u_sum = np.zeros(len(frame_keys)) # 0s - will end up as NaNs once the convolve is done
     v_sum = np.zeros(len(frame_keys))
@@ -185,7 +286,7 @@ def find_mask_centroids_in_model_space(subject_recon,
     dense_u_sum = np.zeros(dense_len)
     dense_u_sum[dense_idx] = u_sum
     u = _rolling(dense_u_sum) / weight_sums_R  # average x pos (image space, so u)
-
+    print(u[0])
     dense_v_sum = np.zeros(dense_len)
     dense_v_sum[dense_idx] = v_sum
     v = _rolling(dense_v_sum) / weight_sums_R  # average y pos (image space, so v)
@@ -195,7 +296,7 @@ def find_mask_centroids_in_model_space(subject_recon,
     centroid_depth = _rolling(dense_depth_sum) / weight_sums_R
 
 
-    # 3) SPREAD -- confidence-weighted std of depth under the mask ("how tight is this blob"),
+    # 3) Z spread -- confidence-weighted std of depth under the mask ("how tight is this blob"),
     # still in camera-space model units along-the-ray, not yet a model-space direction
     z_var = np.zeros(len(frame_keys)) #empty
     #residual of each depth, summed to make cariance (filterd by valid mask present in the frame)
@@ -208,7 +309,7 @@ def find_mask_centroids_in_model_space(subject_recon,
     z_std = np.sqrt(z_var_R / weight_sums_R)
 
 
-    # 4) UNPROJECT -- (col,row,centroid_depth) -> camera-space xyz. col pairs with cx/fx (horizontal),
+    # 4) UNPROJECT to CAM SPACE -- (col,row,centroid_depth) -> camera-space xyz. col pairs with cx/fx (horizontal),
     # row pairs with cy/fy (vertical) -- same pinhole convention as unproject() in Thr3D, just
     # vectorized over every frame at once instead of one full depth map at a time.
     fx, fy = intrinsics[:, 0, 0], intrinsics[:, 1, 1]
@@ -278,15 +379,16 @@ def find_mask_centroids_in_model_space(subject_recon,
 
         fig.tight_layout()
 
-    # 6) SPREAD DIRECTION -- ray direction is just the (normalized) camera-space centroid itself,
-    # since pinhole rays start at the camera origin. rotate (not translate) it into model space
-    # with the same R, then scale by z_std -- centroid +/- depth_spread_model brackets the blob
-    # along the sightline, per-frame, since every frame's ray points a different way once rotated.
+    # 6) RE-OREINT Z_std (thickness + error) into model space
+    #shoot ray from cam to centroid
     ray_dir_cam   = subject_centroids_cam / np.linalg.norm(subject_centroids_cam, axis=1, keepdims=True)
+    #rotate frame of reference into model space
     ray_dir_model = np.einsum("nij,nj->ni", np.transpose(R, (0, 2, 1)), ray_dir_cam)
-    depth_spread_model = z_std[:, None] * ray_dir_model   # (N,3), NaN where z_std is NaN
+    #project z_std into that frame of reference
+    depth_std_model = z_std[:, None] * ray_dir_model   # (N,3), NaN where z_std is NaN
 
-    return subject_centroids_model, frame_keys, depth_spread_model
+    #cetroids and the Zdepth standard deviation in model space, plus the frame keys
+    return subject_centroids_model, frame_keys, depth_std_model
 
 def subject_to_metric_and_gps_space(
             subject_recon,
@@ -304,7 +406,7 @@ def subject_to_metric_and_gps_space(
     shared with the other VGGT-O consumers (VGGT_O_preds_to_ply_export, projection_mapping_sequence)
     so predictions.npz is only read/moved to the GPU once.
     """   
-    subject_centroids_model, frame_keys, _depth_spread_model = find_mask_centroids_in_model_space(subject_recon, masks_dir)
+    subject_centroids_model, frame_keys, _depth_std_model = find_mask_centroids_in_model_space(subject_recon, masks_dir)
     #moves straight from 3d-recon space into real-world frame of reference (metres, NESW)
     sub_real      = transform_RST(subject_centroids_model, R_mw, s_mw, t_mw)
     sub_real_dict = dict(zip(frame_keys, sub_real))   # frame-keyed, same pattern as cam_poses_realworld_dict
@@ -313,14 +415,18 @@ def subject_to_metric_and_gps_space(
     return [(float(frame_keys[i]), *sub_latlon[i])
                 for i in range(len(frame_keys)) if valid[i]] , sub_real , sub_real_dict
     
-def subject_reporting(sub_real_dict,cam_poses_realworld_dict,lat_0 = None, lon_0 =None  ):
-###FOR THE REPORT##
-    print("mapping")
-    map_analysis    = meeting_calculator(sub_real_dict, cam_poses_realworld_dict, lat_0, lon_0)
-    print("moving")
-    subject_movement = subject_direction(sub_real_dict)
-    return
-    
+#------------helpers----------------
+
+def rolling_by_frame(frames, meas, window):
+    """Centered mean of "meas" over `window` FRAMES (not samples). Gaps dilute the
+    window instead of being stitched over."""
+    frames = np.asarray(frames); meas = np.asarray(meas, dtype=float)
+    idx = frames - frames.min()
+    vals = np.zeros(idx.max() + 1); vals[idx] = meas #0s length of total time put measuements on after
+    hits = np.zeros(idx.max() + 1); hits[idx] = 1 #do samples exist at each time point? lenght of total time
+    k = np.ones(window)#kernel
+    #then convolve
+    return (np.convolve(vals, k, mode="same") / np.convolve(hits, k, mode="same"))[idx]
 
 #──────Mapping analysis────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 

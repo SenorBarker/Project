@@ -1,4 +1,5 @@
 import sys
+import gc
 import glob
 from pathlib import Path
 
@@ -104,6 +105,18 @@ def run_vggt_omega(image_dir, output_dir, checkpoint_path, vggt_omega_dir,
             if value.shape[0] == 1:
                 value = value[0]
             predictions_np[key] = value
+
+    # Everything from here down is CPU/numpy work, so drop the GPU side now instead
+    # of holding a full model plus its activations through the .npz save and the GLB
+    # export. This matters in a multi-recon loop (one job per beat): without it the
+    # next call allocates a second VGGTOmega while the previous one is still
+    # resident, and OOMs. Freeing here rather than in the caller means the function
+    # leaves the card clean however it is called.
+    del predictions, extrinsic, intrinsic, images, model
+    gc.collect()
+    torch.cuda.empty_cache()
+    print(f"GPU freed -- {torch.cuda.memory_allocated()/2**30:.2f} GiB still allocated, "
+          f"{torch.cuda.memory_reserved()/2**30:.2f} GiB reserved")
 
     predictions_np["world_points_from_depth"] = _unproject_depth_map_to_point_map(
         predictions_np["depth"],

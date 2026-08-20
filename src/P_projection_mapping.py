@@ -715,7 +715,7 @@ def BEV_tile_render_PM(recon, extra_indices, masks_dir=None, splat_radius=1,
     (P_trace_overlayer.py).
 
     out_path: if given, save there instead of assets_dir()/asset_name() and skip
-    add_to_report -- for callers (e.g. the density sweep) that manage their own
+    add_to_asset_list -- for callers (e.g. the density sweep) that manage their own
     output location/bookkeeping and aren't part of the single case+experiment
     report. Default None preserves the original assets_dir()-based behavior.
 
@@ -743,12 +743,12 @@ def BEV_tile_render_PM(recon, extra_indices, masks_dir=None, splat_radius=1,
     cv2.imwrite(str(outpath), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
 
     if out_path is None:
-        add_to_report({"BEV_tile_render_PM": to_report_path(outpath)})
+        add_to_asset_list({"BEV_tile_render_PM": to_report_path(outpath)})
     return subject_positions, new_view, ortho_params, outpath
 
 
 import subprocess
-from C_CSV_report import add_to_report
+from C_CSV_report import add_to_report, add_to_asset_list
 def projection_mapping_sequence(
         recon,
         main_idx= None,
@@ -825,6 +825,6 @@ def projection_mapping_sequence(
     for_report["projection_mp4"] = to_report_path(mp4_path)
     for_report["projection_gif"] = to_report_path(gif_path)
     for_report["projection_mp4_thumb"] = to_report_path(frame_paths[0])
-    add_to_report(for_report)
+    add_to_asset_list(for_report)
 
     return subject_positions
