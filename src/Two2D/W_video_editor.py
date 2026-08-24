@@ -9,11 +9,13 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import torch
 
 from C_CSV_report import add_to_asset_list
-from A_Config import assets_dir, asset_name, case_dir, case_name, agent_p_output_dir, report_path, to_report_path, sam3_masks_dir
+from A_Config import assets_dir, asset_name, case_dir, case_name, agent_p_output_dir, report_path, to_report_path, sam3_masks_dir, length_units
 from Two2D.B_video_processing import video_fps
 from run_models.A_ROBOFLOW_SAM3 import _slugify_subject
+from P_projection_mapping import reproject
 
 MASK_NAME_FMT = "{:04d}.png"
 CUT_FADE_S = 0.015  # audio ramp on both ends of every clip -- kills cut-point pops
@@ -82,6 +84,108 @@ def apply_mask_overlay(frame_bgr, mask_bool, color=(0, 200, 0), alpha=0.4):
 #colour per track, cycled -- distinct enough to tell fragments apart at a glance
 _TRACK_COLORS = [(0, 200, 0), (200, 0, 200), (0, 165, 255), (255, 200, 0),
                  (0, 0, 255), (255, 0, 128), (0, 255, 255), (128, 0, 255)]
+
+
+#-------SCREEN LABELS (position/speed/heading/distance/confidence overlay)-----------
+
+def project_to_pixel(recon, frame_idx, point_xyz, frame_w, frame_h):
+    '''Model-space (x,y,z) -> pixel (u,v) in this recon frame's own source-video
+    frame, via that frame's own extrinsic/intrinsic. None if the point is behind
+    the camera, has no matching recon row, or lands outside the frame.'''
+    row = recon.frame_to_row.get(frame_idx)
+    if row is None or point_xyz is None or not np.isfinite(np.asarray(point_xyz)).all():
+        return None
+    intrinsic = recon.preds["intrinsic"][row]
+    extrinsic = recon.preds["extrinsic"][row]
+    point = torch.as_tensor(np.asarray(point_xyz), dtype=extrinsic.dtype, device=extrinsic.device)
+    u, v, _z, valid = reproject(point, intrinsic, extrinsic)
+    u, v = float(u), float(v)
+    if not bool(valid) or not (0 <= u < frame_w and 0 <= v < frame_h):
+        return None
+    return u, v
+
+
+def draw_subject_label(frame, u, v, subject_slug, label, color=(255, 255, 255)):
+    '''Small multi-line text block (position/speed/heading/distance/confidence)
+    next to (u, v), on a translucent background so it stays legible over any
+    video content.'''
+    lines = [subject_slug]
+    pos = label.get("position")
+    if pos is not None and np.isfinite(np.asarray(pos)).all():
+        lines.append(f"pos: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f})")
+    speed = label.get("speed_kmh")
+    if speed is not None and np.isfinite(speed):
+        lines.append(f"speed: {speed:.1f} km/h")
+    heading = label.get("heading")
+    if heading is not None and np.isfinite(heading):
+        lines.append(f"heading: {heading:.0f} deg")
+    dist = label.get("dist_cam")
+    if dist is not None and np.isfinite(dist):
+        lines.append(f"dist: {dist:.1f} {length_units()}")
+    conf = label.get("confidence")
+    if conf is not None and np.isfinite(conf):
+        lines.append(f"conf: {conf:.0f}")
+
+    font, scale, thick = cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1
+    line_h = 18
+    x, y = int(u) + 10, int(v)
+    box_w = max(cv2.getTextSize(l, font, scale, thick)[0][0] for l in lines) + 8
+    box_h = line_h * len(lines) + 6
+
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (x - 4, y - 12), (x - 4 + box_w, y - 12 + box_h), (0, 0, 0), -1)
+    frame = cv2.addWeighted(overlay, 0.5, frame, 0.5, 0)
+    for i, line in enumerate(lines):
+        cv2.putText(frame, line, (x, y + i * line_h), font, scale, color, thick, cv2.LINE_AA)
+    return frame
+
+
+def build_frame_label_lookup(recon_jobs):
+    '''frame_idx -> [(subject_slug, label_dict, recon), ...], merged across every
+    recon job's screen_labels. Frame-indexed rather than beat-indexed: a job's
+    frame range isn't tied to the one beat that requested its reconstruction, and
+    plenty of beats (plain "real" beats especially) have no job of their own at
+    all -- so any beat's footage looks itself up by absolute frame number instead
+    of trying to find "its" job.
+
+    Collects job["screen_labels"] on demand (build_screen_labels) for any job
+    that doesn't already have it, so callers (assemble_paper_edit,
+    render_screen_labels_video) don't need a separate notebook step to
+    populate it first.'''
+    from Q_subject_analysis import build_screen_labels
+
+    lookup = {}
+    for job in recon_jobs:
+        recon = job.get("recon")
+        if recon is None:
+            continue
+        if "screen_labels" not in job:
+            build_screen_labels(job)
+        screen_labels = job.get("screen_labels") or {}
+        for subject_slug, by_frame in screen_labels.items():
+            # screen_labels is sparse (recon frames only) -- hold each label
+            # forward to just before the next solved frame, else it only hits
+            # on one frame out of many and flashes.
+            frames = sorted(by_frame)
+            for i, frame_idx in enumerate(frames):
+                label = by_frame[frame_idx]
+                next_frame = frames[i + 1] if i + 1 < len(frames) else frame_idx + 1
+                for f in range(frame_idx, next_frame):
+                    # source_frame_idx (not f) is what recon.frame_to_row has a
+                    # row for -- held frames have no row of their own.
+                    lookup.setdefault(f, []).append((subject_slug, label, recon, frame_idx))
+    return lookup
+
+
+def _draw_frame_labels(frame, frame_idx, frame_label_lookup):
+    if not frame_label_lookup:
+        return frame
+    fh, fw = frame.shape[:2]
+    for subject_slug, label, recon, source_frame_idx in frame_label_lookup.get(frame_idx, []):
+        proj = project_to_pixel(recon, source_frame_idx, label.get("position"), fw, fh)
+        if proj is not None:
+            frame = draw_subject_label(frame, proj[0], proj[1], subject_slug, label)
+    return frame
 
 
 def frames_overlay_check(frames_dir, masks_dirs, name=None, review_fps=6, color=None):
@@ -312,6 +416,74 @@ def video_overlay_edit(
     return outpath
 
 
+def render_screen_labels_video(video_path, job, name=None):
+    '''Manual/ad hoc: burns one job's screen_labels (see build_screen_labels)
+    straight onto video_path, no paper_edit.json or beats involved -- for
+    eyeballing the label overlay on a single job without running the full
+    assemble_paper_edit pipeline (which is the normal path once recon_jobs is
+    passed into it).
+
+    Covers only the span of frames that job's subjects actually have data
+    for (min..max of every subject's frame keys), same shape as
+    video_overlay_edit but for labels instead of a mask.'''
+    name = name or asset_name()
+    frame_label_lookup = build_frame_label_lookup([job])
+    if not frame_label_lookup:
+        raise ValueError(f"job {job.get('beat_key')!r} has no screen_labels to render.")
+
+    start_frame = min(frame_label_lookup)
+    end_frame   = max(frame_label_lookup)
+
+    fps = video_fps(video_path)
+    start_s = start_frame / fps
+    end_s   = (end_frame + 1) / fps
+
+    cap = cv2.VideoCapture(str(video_path))
+    fw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    fh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    tmp_silent = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+    tmp_silent.close()
+    tmp_silent_path = tmp_silent.name
+
+    try:
+        writer = cv2.VideoWriter(tmp_silent_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (fw, fh))
+
+        frame_idx = 0
+        written = 0
+        while frame_idx <= end_frame:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if frame_idx >= start_frame:
+                frame = _draw_frame_labels(frame, frame_idx, frame_label_lookup)
+                writer.write(frame)
+                written += 1
+            frame_idx += 1
+
+        cap.release()
+        writer.release()
+
+        if written == 0:
+            raise ValueError(f"No frames written for {name} screen labels [{start_frame}, {end_frame}].")
+
+        outpath = assets_dir() / f"{name}_screen_labels.mp4"
+        outname = f"{name}_screen_labels.mp4"
+        subprocess.run(
+            ["ffmpeg", "-y",
+             "-i", tmp_silent_path,
+             "-ss", f"{start_s:.3f}", "-to", f"{end_s:.3f}", "-i", str(video_path),
+             "-map", "0:v:0", "-map", "1:a:0",
+             "-c:v", "libx264", "-c:a", "aac", str(outpath)],
+            check=True,
+        )
+    finally:
+        os.remove(tmp_silent_path)
+
+    add_to_asset_list({"screen_labels_mp4": to_report_path(outpath)})
+    return outpath
+
+
 def mask_compositor(
         video_path,
         start,
@@ -380,7 +552,8 @@ def mask_compositor(
     return
 
 
-def _mask_overlay_mezzanine_clip(video_path, fps, start_frame, end_frame, masks_dirs, out_dir, name):
+def _mask_overlay_mezzanine_clip(video_path, fps, start_frame, end_frame, masks_dirs, out_dir, name,
+                                  frame_label_lookup=None):
     '''Lossless extraction of a mask-overlay clip for an explicit frame
     range. Burns every masks_dirs entry's mask onto each frame (composited
     together if more than one -- e.g. several distinct subjects tracked in
@@ -391,7 +564,13 @@ def _mask_overlay_mezzanine_clip(video_path, fps, start_frame, end_frame, masks_
     just with an overlaid picture. No beat/track lookup here -- the caller
     decides what masks_dirs contains and what name to use, so this works
     equally for a paper-edit beat (assemble_paper_edit) or an ad hoc mask
-    folder from a notebook.
+    folder from a notebook. masks_dirs may be empty -- e.g. a "real" beat with
+    no mask overlay of its own, extracted through here only because
+    frame_label_lookup has screen labels to burn onto it.
+
+    frame_label_lookup, if given (see build_frame_label_lookup), draws
+    position/speed/heading/distance/confidence text next to every subject
+    with data for that frame, regardless of whether that subject has a mask.
 
     cv2/OpenCV's FFV1 VideoWriter support is unreliable across builds, so
     frames are written to a temp PNG sequence first (same approach as
@@ -421,6 +600,7 @@ def _mask_overlay_mezzanine_clip(video_path, fps, start_frame, end_frame, masks_
                     mask = _load_mask_bool(masks_dir, frame_idx)
                     if mask is not None:
                         frame = apply_mask_overlay(frame, mask)
+                frame = _draw_frame_labels(frame, frame_idx, frame_label_lookup)
                 cv2.imwrite(str(tmp_frames_dir / f"frame_{written:04d}.png"), frame)
                 written += 1
             frame_idx += 1
@@ -584,13 +764,23 @@ def _concat_mezzanine_clips(clip_paths, out_path, fade_s=CUT_FADE_S):
     )
 
 
-def assemble_paper_edit(video_path, analysis_2d_for_decisions=None):
+def assemble_paper_edit(video_path, analysis_2d_for_decisions=None, recon_jobs=None, draw_screen_labels=True):
     '''Walks the current case's paper_edit.json beats in order, extracts
     each beat to a lossless mezzanine clip, then concatenates all of them
     with a single final lossy encode into
     assets_dir()/<asset_name>_rough_cut.mp4. See module comment above for
     what's wired up and the mezzanine/cleanup rationale.
-    analysis_2d_for_decisions supplies tracked_subject beats' mask dirs.'''
+    analysis_2d_for_decisions supplies tracked_subject beats' mask dirs.
+
+    recon_jobs (draw_screen_labels=True, the default) supplies every job's
+    screen_labels for the position/speed/heading/distance/confidence overlay
+    (see build_screen_labels) -- merged frame-indexed via
+    build_frame_label_lookup so it's not tied to beat/job matching (see that
+    function's docstring for why). Pass recon_jobs=None or
+    draw_screen_labels=False to skip the overlay and get the plain rough cut.
+    A beat only takes the slower per-frame extraction path if it actually has
+    labels (or a mask) to burn in; a plain "real" beat with no label data in
+    its frame range still takes the fast direct-cut path.'''
     paper_edit_path = agent_p_output_dir() / f"{case_name()}_paper_edit.json"
     paper_edit = json.loads(paper_edit_path.read_text(encoding="utf-8"))
     beats = sorted(paper_edit["beats"], key=lambda b: b["order"])
@@ -604,11 +794,18 @@ def assemble_paper_edit(video_path, analysis_2d_for_decisions=None):
     mezzanine_dir = assets_dir() / "_rough_cut_mezzanine"
     mezzanine_dir.mkdir(parents=True, exist_ok=True)
 
+    frame_label_lookup = (
+        build_frame_label_lookup(recon_jobs) if recon_jobs and draw_screen_labels else {}
+    )
+
     clip_paths = []
     for beat in beats:
         if beat["segment_type"] == "real":
-            if beat.get("tracked_subject"):
-                beat_name = beat["beat_id"][0]
+            beat_name = beat["beat_id"][0]
+            beat_has_labels = any(
+                f in frame_label_lookup for f in range(beat["start_frame"], beat["end_frame"] + 1)
+            )
+            if beat.get("tracked_subject") and "MASK_OVERLAYS" in (beat.get("requested_flags") or []):
                 print(f"making overlay for beat {beat_name}")
                 # Select this beat's instances out of analysis_2d_for_decisions
                 # instead of re-deriving from the subject label -- gem_person_id
@@ -628,7 +825,15 @@ def assemble_paper_edit(video_path, analysis_2d_for_decisions=None):
                 ))
                 clip_paths.append(_mask_overlay_mezzanine_clip(
                     video_path, fps, beat["start_frame"], beat["end_frame"],
-                    masks_dirs, mezzanine_dir, name=beat_name))
+                    masks_dirs, mezzanine_dir, name=beat_name,
+                    frame_label_lookup=frame_label_lookup))
+            elif beat_has_labels:
+                # no mask overlay for this beat, but there IS screen-label data
+                # covering some of its frames -- worth the slower per-frame path
+                clip_paths.append(_mask_overlay_mezzanine_clip(
+                    video_path, fps, beat["start_frame"], beat["end_frame"],
+                    [], mezzanine_dir, name=beat_name,
+                    frame_label_lookup=frame_label_lookup))
             else:
                 clip_paths.append(_real_mezzanine_clip(beat, video_path, fps, mezzanine_dir))
         
@@ -679,6 +884,10 @@ def find_true_audio_span(video_path, window_start_s, window_end_s,
     from onset/offset but clamped to the nearest silence boundary --
 
     Returns (onset, offset, handle_in, handle_out).'''
+    #00: either 0 or the window-margin
+    #01 window start and 1s
+    #10 1s before end asked for
+    #11 end + 3s 
     scan_ranges = [
         (max(0.0, window_start_s - analysis_margin_s), window_start_s + 0.999),
         (window_end_s - 0.999, window_end_s + analysis_margin_s),
@@ -745,7 +954,7 @@ def find_cut_point_in_zone(zone_lo, zone_hi, boundary_frames, prefer_near):
 
 def find_cut_points(beat, video_path, fps, analysis_2d_for_decisions=None,
                      handle_s=1.5,
-                     analysis_margin_s=1.5, noise_db=-20, min_silence_s=0.3):
+                     analysis_margin_s=2.5, noise_db=-20, min_silence_s=0.3):
     '''Finds this beat's actual in/out frames from its rough search window,
     audio-first (see module comment). Mutates and returns beat; no-op on
     synthetic beats -- they have no footage to cut.'''
@@ -817,14 +1026,17 @@ def find_cut_points(beat, video_path, fps, analysis_2d_for_decisions=None,
     return beat
 
 
-def find_all_cut_points(video_path=None, analysis_2d_for_decisions=None, **kwargs):
+def find_all_cut_points(video_path=None, analysis_2d_for_decisions=None,paper_edit_json_path=None, **kwargs):
     '''Walks the current case's paper_edit_draft.json (this runs between the
     producer's draft and revision passes, before the revision file exists),
     finds real in/out frames for every auto_select beat, and rewrites the
     same file in place -- run this before the producer's revision pass, which
     expects auto_select beats already resolved.'''
     paper_edit_path = agent_p_output_dir() / f"{case_name()}_paper_edit_draft.json"
-    paper_edit = json.loads(paper_edit_path.read_text(encoding="utf-8"))
+    #paper_edit = json.loads(paper_edit_path.read_text(encoding="utf-8"))
+    # new for multiple drafts
+
+    paper_edit = json.loads(paper_edit_json_path.read_text(encoding="utf-8"))
 
     if video_path is None:
         video_path = next((case_dir() / "010_source").glob("*.mp4"))
@@ -834,5 +1046,5 @@ def find_all_cut_points(video_path=None, analysis_2d_for_decisions=None, **kwarg
         find_cut_points(beat, video_path, fps,
                          analysis_2d_for_decisions=analysis_2d_for_decisions, **kwargs)
 
-    paper_edit_path.write_text(json.dumps(paper_edit, indent=2), encoding="utf-8")
+    paper_edit_json_path.write_text(json.dumps(paper_edit, indent=2), encoding="utf-8")
     return paper_edit_path

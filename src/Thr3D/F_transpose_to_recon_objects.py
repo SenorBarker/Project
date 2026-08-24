@@ -93,15 +93,16 @@ def cut3r_to_reconstruction(frames_dir, cut3r_output_dir):
 
 
 def megasam_to_reconstruction(frames_dir, npz_path):
-    """MegaSaM's single npz has no per-pixel confidence -- depth_conf is an
-    all-ones placeholder. Every confidence-gated consumer downstream compares
-    against a confidence_threshold that defaults to 5-20 for the other
-    techniques, so a flat 1.0 placeholder would get filtered out entirely by any
-    of those -- callers rendering a BEV from a MegaSaM-built Reconstruction MUST
-    pass confidence_threshold=0 (see AA_cam_pose_sweeps.py), not whatever
-    threshold is used for the other techniques. This means no filtering happens
-    for MegaSaM at all: every reconstructed point, noise included, an inherent
-    limitation of the data available rather than a bug.
+    """cvd_opt.py's consistency optimization tracks a per-pixel `uncertainty`
+    (lower = more confident, clamped 1e-4..1e3) and now saves it into the same
+    npz as `uncertainty` alongside depths/images/etc (see cvd_opt.py's savez).
+    depth_conf = 1/uncertainty flips that to the "higher = more confident"
+    convention every other technique's depth_conf uses, so the same
+    confidence_threshold semantics apply here as for CUT3R/VGGT/lingbot-map.
+
+    Older npz files produced before that cvd_opt.py patch have no `uncertainty`
+    key -- falls back to an all-ones depth_conf placeholder (no filtering),
+    same as before.
 
     cam_c2w is 4x4 c2w -- inverted to w2c, same as cut3r_to_reconstruction."""
     data = np.load(npz_path)
@@ -120,7 +121,10 @@ def megasam_to_reconstruction(frames_dir, npz_path):
     images = images.astype(np.float32)
     if images.max() > 1.5:  # 0..255 -> 0..1, mirrors every other loader's convention
         images = images / 255.0
-    depth_conf = np.ones_like(depth, dtype=np.float32)
+    if "uncertainty" in data:
+        depth_conf = (1.0 / _as_nhw(data["uncertainty"]).astype(np.float32))
+    else:
+        depth_conf = np.ones_like(depth, dtype=np.float32)
 
     intrinsic = data["intrinsic"]
     if intrinsic.ndim == 2:  # single shared camera -> broadcast to per-frame

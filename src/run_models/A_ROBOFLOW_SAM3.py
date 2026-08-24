@@ -284,6 +284,19 @@ def _slugify_subject(subject):
     return slug or "subject"
 
 
+def _next_track_id_start(masks_root, subject_slug):
+    """Resume numbering after whatever {subject_slug}-NN folders already
+    exist on disk, so a later tracking run for the same subject gets new
+    folders instead of colliding with (and overwriting frames in) a
+    previous run's."""
+    pattern = re.compile(rf"^{re.escape(subject_slug)}-(\d+)$")
+    existing = [
+        int(m.group(1)) for p in masks_root.glob(f"{subject_slug}-*")
+        if p.is_dir() and (m := pattern.match(p.name))
+    ]
+    return max(existing, default=0) + 1
+
+
 def _dispatch_sam3_tracking(*args, **kwargs):
     """
     Routes to whichever backend USE_LOCAL_SAM3 selects. Both sides take the
@@ -304,7 +317,7 @@ def _dispatch_sam3_tracking(*args, **kwargs):
     return _run_sam3_tracking(*args, **kwargs)
 
 
-def track_subject_sam3(video_path, threshold=0.5,
+def track_subject_sam3(video_path,paper_edit_json_path, threshold=0.5,
                         requested_region="us", requested_plan="webrtc-gpu-large"):
     import json
     import sys
@@ -316,7 +329,7 @@ def track_subject_sam3(video_path, threshold=0.5,
     print("accessing data")
     from render_paper_edit import build_tracking_requests
 
-    paper_edit_json_path = agent_p_output_dir() / f"{case_name()}_paper_edit_draft.json"
+    #paper_edit_json_path = agent_p_output_dir() / f"{case_name()}_paper_edit_draft.json"
 
     flags_path = paper_edit_json_path.with_name(
         paper_edit_json_path.stem.replace("_paper_edit", "") + "_flags.json"
@@ -329,11 +342,15 @@ def track_subject_sam3(video_path, threshold=0.5,
     cap.release()
     
     tracking_requests = build_tracking_requests(paper_edit_json_path, fps)
-    
+
+    if not tracking_requests:
+        print("Nothing left to track")
+        return {}
+
     tracking_requests_by_subject = defaultdict(list)
-    print(tracking_requests_by_subject)
     for request in tracking_requests:
         tracking_requests_by_subject[request["subject"]].append(request)
+    print("Tracking this list2", tracking_requests_by_subject.keys())
 
     return _dispatch_sam3_tracking(video_path, tracking_requests_by_subject, threshold, requested_region, requested_plan)
 
@@ -393,7 +410,7 @@ def _run_sam3_tracking(video_path, tracking_requests_by_subject, threshold, requ
         frames_by_instance = {}  # global track_id -> [frame_idx, ...]
         beat_ids_by_instance = {}  # global track_id -> set(beat_id)
         subject_beat_ids = set()  # union across all this subject's requests, for the no-detection case
-        next_track_id = [1]  # mutable cell so on_data's closure can bump it
+        next_track_id = [_next_track_id_start(masks_root, subject_slug)]  # mutable cell so on_data's closure can bump it
 
         for request in requests:
             span_start_s = request["start_s"]

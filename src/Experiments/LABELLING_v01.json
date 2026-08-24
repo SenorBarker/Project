@@ -1,0 +1,48 @@
+{ "Overview1" : " This is a question of `what  would you do? if you had to edit and analyse an ego-centric video, according to a set brief",
+  "Overview2" : " We have created a video summariser that does this automatically. it edits the video, gemerates a map that shows where and what the camera filmed",
+  "overview3" :  "This Json is to label the unedited videos, which will be used as a GT vs the video the summariser makes",
+  "Overview4" : "populate all the fields as you watch the video. It's in two parts: how the video makes you feel, and what video spans are important , or really not imppant and should never be included ",
+  
+"case_name": "402_Hide_n_seek_sw07",
+  "brief": "(read this it shows what the goal is for the summariser): Make a video summary of this video, focussing on X.",
+  "video" : [{  
+    "instruction" : "how did this video make you feel?",
+    "boring" : false,
+    "excitng" : false,
+    "upsetting" : false,
+    "confusing" : true,
+    "too_long"  : true,
+    "too_short" : false
+  }],
+  "beatsGuide" : [{"guide": "make one of these for every segment that is either essential for the story, or so bad it must be removed videos are long, so thre is a min and s field to make it easier for you to type and to be machine readable",
+                  "start and end times" : "split up into minutes and seconds to make it easier for you to type, instead of typing 00:00:00:00 each time. you must populate min and sec fields",
+                  "Critical_event" : "mark this 'true' if this is the most important moment. There can be more than 1 of these, but not many",
+                  "delete" : " this is for parts where the lens is blocked, images out of focus, or it's completely unrelated to the story. Just the worst bits.",
+                  "tracked_subject" : "a list of dicts of people and things you want to locate spatially (will be mapped), or analyse how they move (speed etc will be calculated)",
+                  "frame_by_frame_analysis" : "for action packed moments every frame ndergoes 3D reconstrutction for detailed analysis"
+                   }],
+  "beats": [
+    { 
+      "start_time_min": 0,
+      "start_time_sec": 45,
+      "end_time_min": 1,
+      "end_time_s"  : 6,
+      "Critical_event" : true,
+      "delete" : false,
+      
+      "tracked_subject": [
+        {"item": "person", "descriptor": "Woman in black shirt, sunglasses, khaki pants"},
+        {"item": "telephone", "descriptor": "the telephone in the woman's hand"}],
+      "frame_by_frame_analysis" : true   
+    },
+    {  "start_time_min": 2,
+      "start_time_sec": 35,
+      "end_time_min": 3,
+      "end_time_s"  : 12,
+      "Critical_event" : false,
+      "delete" : true,   
+      "tracked_subject": null  
+    }
+  ]
+    
+      }

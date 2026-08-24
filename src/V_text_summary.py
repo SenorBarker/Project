@@ -33,8 +33,8 @@ def gemini_final_report():
             f" if the same person is talking and there is less than 2s pause, this is one entry not 2"     
         )
     from Two2D.A_gemini import gemini_query_CSV_cached
-    event_description = gemini_query_CSV_cached(event_descrption_prompt, asset_name, report_path(), assets_dir())
-    transcript =  gemini_query_CSV_cached(transcript_prompt, asset_name, report_path(), assets_dir())
+    event_description = gemini_query_CSV_cached(event_descrption_prompt, asset_name,  assets_dir())
+    transcript =  gemini_query_CSV_cached(transcript_prompt, asset_name, assets_dir())
 
     #save and add to report
     (assets_dir() / f"{asset_name}_event_description.txt").write_text(event_description)

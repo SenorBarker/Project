@@ -38,10 +38,14 @@ import torch
 try:
     # How the rest of src/ imports this package (see D_2d_analysis,
     # Two2D/W_video_editor); the notebook only puts src/ on sys.path.
-    from run_models.A_ROBOFLOW_SAM3 import MASK_NAME_FMT, _slugify_subject, make_span_clip
+    from run_models.A_ROBOFLOW_SAM3 import (
+        MASK_NAME_FMT, _next_track_id_start, _slugify_subject, make_span_clip,
+    )
 except ModuleNotFoundError:
     # How the spike scripts import it, running from inside run_models/.
-    from A_ROBOFLOW_SAM3 import MASK_NAME_FMT, _slugify_subject, make_span_clip
+    from A_ROBOFLOW_SAM3 import (
+        MASK_NAME_FMT, _next_track_id_start, _slugify_subject, make_span_clip,
+    )
 
 # Built once per process and reused across every subject and span -- the
 # checkpoint is 848M params and takes tens of seconds to load, so rebuilding
@@ -221,7 +225,7 @@ def _run_sam3_tracking_local(video_path, tracking_requests_by_subject, threshold
         beat_ids_by_instance = {}  # global track_id -> set(beat_id)
         subject_beat_ids = set()  # union across all this subject's requests, for the no-detection case
         subject_too_dense = []  # ObjectTooDense reasons, for the no-detection entry
-        next_track_id = 1
+        next_track_id = _next_track_id_start(masks_root, subject_slug)
 
         for request in requests:
             span_start_s = request["start_s"]
@@ -331,7 +335,14 @@ def _run_sam3_tracking_local(video_path, tracking_requests_by_subject, threshold
     release_predictor()  # tracking is done; don't hold the card for the next stage
 
     if raw_detection_rows:
-        pd.DataFrame(raw_detection_rows).to_csv(masks_root / "detections.csv", index=False)
+        csv_path = masks_root / "detections.csv"
+        new_rows = pd.DataFrame(raw_detection_rows)
+        if csv_path.exists():
+            # track_id numbering never reuses an id already on disk (see
+            # _next_track_id_start), so this run's rows can't collide with a
+            # prior run's -- a plain concat is safe, no dedup needed.
+            new_rows = pd.concat([pd.read_csv(csv_path), new_rows], ignore_index=True)
+        new_rows.to_csv(csv_path, index=False)
 
     # Two different failures used to share one message, and "found no detections"
     # sends you looking at the footage when the real answer is that nothing was

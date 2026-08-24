@@ -119,9 +119,12 @@ def _speed_direction_single(positions_dict, fps):
 
 def speed_direction(positions_dicts, fps):
     '''positions_dicts is one of:
-      - a single time->position dict
-      - a sequence of them, labelled camera, subject, subject_2...
+      - a single time->position dict -> returns one (mps, kmh, heading) tuple
+      - a sequence of them, labelled camera, subject, subject_2... -> returns
+        a plain list of (mps, kmh, heading) tuples, same order as the input
       - a {name: time->position dict} mapping, which keeps the real subject slugs
+        -> returns a dict[name -> (mps, kmh, heading)], keyed by those same names
+        instead of relying on the caller knowing the input dict's insertion order
     Each is run through the same speed/heading maths, then plotted together on
     shared axes. Saves the plots and appends to the report CSV for whichever case
     is currently active (see A_Config.set_case).'''
@@ -188,7 +191,9 @@ def speed_direction(positions_dicts, fps):
     })
         
 
-    return metrics[0] if single else metrics
+    if single:
+        return metrics[0]
+    return dict(zip(named, metrics)) if named is not None else metrics
 
 
 

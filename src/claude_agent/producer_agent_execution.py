@@ -214,8 +214,8 @@ def build_producer_prompt_draft2(brief: str, analysis_2d_for_decisions: dict, pr
     places_text  =   (query_dir() / f"{case_name()}_places.txt").read_text(encoding="utf-8")
     people_text  =   (query_dir() / f"{case_name()}_people.json").read_text(encoding="utf-8")
     source_text = f"DESCRIPTION\n{description_text}\nOBJECTS\n{objects_text}\nAUDIO TRANSCRIPT\n{transcript_text}\nPLACES{places_text}\nPEOPLE\n{people_text}"
-    draft_paper_edit_text = (agent_p_output_dir() / f"{case_name()}_paper_edit_draft.json").read_text(encoding="utf-8")
-    assistant_feedback  =  (agent_p_output_dir() / f"{case_name()}_draft_ast_fb.json").read_text(encoding="utf-8")
+    previous_paper_edit_text = (agent_p_output_dir() / f"{case_name()}_paper_edit.json").read_text(encoding="utf-8")
+    #assistant_feedback  =  (agent_p_output_dir() / f"{case_name()}_draft_ast_fb.json").read_text(encoding="utf-8")
     return f"""
             MODE: draft
 
@@ -227,12 +227,9 @@ def build_producer_prompt_draft2(brief: str, analysis_2d_for_decisions: dict, pr
             {brief}        
 
             ERROR_CORRECTION: (your draft)
-            {draft_paper_edit_text} 
-            ERROR_CORRECTION: and the mistakes you have made
-            {assistant_feedback}
-
+            {previous_paper_edit_text} 
+            
             SOURCE MATERIAL:
-
             {source_text}
 
             2D ANALYSIS — deterministic measurement, treat as fact:
@@ -244,14 +241,14 @@ def build_producer_prompt_draft2(brief: str, analysis_2d_for_decisions: dict, pr
             Produce the paper edit per your instructions.
             """
 
-def build_producer_prompt_revision(brief: str, analysis_2d_for_decisions: dict, producer_flags: dict) -> str:
+def build_producer_prompt_revision(brief: str, analysis_2d_for_decisions: dict, producer_flags: dict, paper_edit_json_path) -> str:
     description_text = (query_dir() / f"{case_name()}_description.txt").read_text(encoding="utf-8")
     objects_text = (query_dir() / f"{case_name()}_objects.txt").read_text(encoding="utf-8")
     transcript_text = (query_dir() / f"{case_name()}_transcript_full.txt").read_text(encoding="utf-8")
     places_text  =   (query_dir() / f"{case_name()}_places.txt").read_text(encoding="utf-8")
     people_text  =   (query_dir() / f"{case_name()}_people.json").read_text(encoding="utf-8")
     source_text = f"DESCRIPTION\n{description_text}\nOBJECTS\n{objects_text}\nAUDIO TRANSCRIPT\n{transcript_text}\nPLACES{places_text}\nPEOPLE\n{people_text}"
-    draft_paper_edit_text = (agent_p_output_dir() / f"{case_name()}_paper_edit_draft.json").read_text(encoding="utf-8")
+    draft_paper_edit_text = paper_edit_json_path.read_text(encoding="utf-8")
 
     return f"""
             MODE: revision
@@ -266,7 +263,7 @@ def build_producer_prompt_revision(brief: str, analysis_2d_for_decisions: dict, 
             SOURCE MATERIAL:
             {source_text}
 
-            2D ANALYSIS (subject: the cat) — deterministic measurement, treat as fact:
+            2D ANALYSIS deterministic measurement, treat as fact:
             {analysis_2d_for_decisions}
 
             AVAILABLE FLAGS (things you may request by setting True — do not touch anything not listed):

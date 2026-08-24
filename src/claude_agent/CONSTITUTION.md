@@ -13,6 +13,7 @@ Rules the planning agent follows for paper edits. Every decision must cite a rul
     - `SOUNDBITE` — audio-lead. the visuals are not important.
     - `MAP` — a synthetic map/recon asset request (interior or geographic).
     - `METRIC` — a chart/stat asset request.
+    - `PROJECTION_MAP`- 4D rendering of an `EVENT_ACTION`
     
 1. Picture Editing  
     R1.1 [FOOTAGE] — No jump cuts on the same subject; change angle by 30°+ or shot size.  

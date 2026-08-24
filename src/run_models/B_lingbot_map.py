@@ -122,7 +122,7 @@ def load_lingbot_frame(out_dir, frame_num):
 
 
 def run_lingbot_map(mode="streaming", first_k=None, stride=1,
-                     launch_viewer=False, port=8080, **demo_kwargs):
+                     launch_viewer=False,frames_for_recon= None, port=8080,  **demo_kwargs):
     """Run lingbot-map headlessly over frames_for_recon_dir(), saving one per-frame
     npz per frame to lingbot_map_dir(). No CSV report logging -- this stage produces
     intermediate 2D->3D data, not a final reportable asset.
@@ -136,7 +136,10 @@ def run_lingbot_map(mode="streaming", first_k=None, stride=1,
     # root, same reason main() does this.
     os.chdir(LINGBOT_ROOT)
     sys.path.insert(0, str(LINGBOT_ROOT))
-    in_path = frames_for_cam_poses_dir()
+    if frames_for_recon:
+        in_path = frames_for_recon
+    else:
+        in_path = frames_for_cam_poses_dir()
     #in_path = frames_for_recon_dir()
     out_path = lingbot_map_dir()
     out_path.mkdir(parents=True, exist_ok=True)

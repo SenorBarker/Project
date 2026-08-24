@@ -32,7 +32,12 @@ def _run(cmd, cwd, env=None, desc=""):
     print(f"  {desc} done in {time.time() - t0:.0f}s")
 
 
-def run_megasam(mega_sam_dir, scene_name="scene",
+def megasam_output_path(scene_name="scene"):
+    """Path where run_megasam() will copy {scene_name}_sgd_cvd_hr.npz, without running anything."""
+    return mega_SAM_output_dir() / f"{scene_name}_sgd_cvd_hr.npz"
+
+
+def run_megasam(mega_sam_dir, frames_dir =None, scene_name="scene",
                  conda_env="mega_sam"):
     """
     Run the full MegaSaM pipeline (mono-depth -> camera tracking -> RAFT flow
@@ -64,7 +69,10 @@ def run_megasam(mega_sam_dir, scene_name="scene",
         Path to the copied {scene_name}_sgd_cvd_hr.npz in output_dir
         (keys: images, depths, intrinsic, cam_c2w)
     """
-    frames_dir   = frames_for_cam_poses_dir()
+    if frames_dir ==None:
+        frames_dir   = frames_for_cam_poses_dir()
+    else:
+        frames_dir= frames_dir
     output_dir   = mega_SAM_output_dir()
     mega_sam_dir = Path(mega_sam_dir).resolve()
 

@@ -30,7 +30,7 @@ import cv2
 import numpy as np
 
 
-def descriptor_targets(paper_edit_json_path=None):
+def descriptor_targets(paper_edit_json_path,descriptor_targets=None):
     """gem_person_id -> {"descriptor": str, "windows": [(start_s, end_s), ...]}.
 
     Windows come from render_paper_edit.tracking_windows -- the same helper the
@@ -262,7 +262,7 @@ async def _ask(prompt, cwd, model):
     return reply
 
 
-def match_tracks_to_descriptors(crops_by_track=None, targets=None, masks_root=None, fps=None,
+def match_tracks_to_descriptors(paper_edit_json_path,crops_by_track=None, targets=None, masks_root=None, fps=None,
                                 model="claude-sonnet-5", delete_crops=True):
     """gem_person_id -> [track_id, ...]. One call per track ("which of these people
     is this, or NONE"), so two people can't claim one mask. Crops deleted as used.
@@ -270,7 +270,7 @@ def match_tracks_to_descriptors(crops_by_track=None, targets=None, masks_root=No
     import A_Config
 
     masks_root = Path(masks_root or A_Config.sam3_masks_dir())
-    targets = targets or descriptor_targets()
+    targets = targets or descriptor_targets(paper_edit_json_path)
     crops_by_track = crops_by_track or write_masked_crops(masks_root=masks_root)
 
     results = {gem_person_id: [] for gem_person_id in targets}

@@ -76,6 +76,7 @@ def image_sequencer(
     search_window   Search ±N frames around each sample point for a sharper frame.
     min_sharpness   Skip output frames whose best sharpness score is below this.
                     Score scale depends on --score-scale; leave at 0 to keep all.
+                    NOT USED IN CURRENT PIPELINE
     outrank_margin  Search ratchets outward from the sample point one frame at a
                     time; a candidate only takes over as the winner if it beats the
                     CURRENT winner by this fraction (0.1 = needs to be >10% sharper),
@@ -414,6 +415,56 @@ def seek_exact(cap, frame_idx):
         if not cap.grab():
             return False
     return True
+
+
+def frame_indices_at_times(video_path, target_times_s):
+    '''INPUT  : path to a video file, list of target times in seconds (e.g. one
+                per GPS fix).
+       OUTPUT : list[int | None] -- frame index (same order as target_times_s)
+                whose own decoded timestamp (CAP_PROP_POS_MSEC) is nearest that
+                target. None only if the video has no frames.
+                Same single sequential pass as frames_at_times (VFR-safe, no
+                cap.set(POS_FRAMES, N) mid-stream), but for callers that only
+                need indices, not pixels: cap.grab() instead of cap.read()
+                skips the frame decode, and targets are walked with a
+                two-pointer merge (both frame times and sorted targets are
+                monotonic increasing) instead of comparing every frame against
+                every target -- O(frames + targets) and no frame.copy(), vs.
+                frames_at_times' O(frames * targets) with a copy on every
+                improving match.'''
+    order = sorted(range(len(target_times_s)), key=lambda i: target_times_s[i])
+    sorted_targets = [target_times_s[i] for i in order]
+    result_sorted = [None] * len(sorted_targets)
+
+    cap = cv2.VideoCapture(str(video_path))
+    prev_t, prev_idx = None, None
+    frame_idx = -1
+    ti = 0
+    while ti < len(sorted_targets):
+        if not cap.grab():
+            break
+        frame_idx += 1
+        t_s = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+
+        while ti < len(sorted_targets) and sorted_targets[ti] <= t_s:
+            if prev_t is not None and abs(prev_t - sorted_targets[ti]) < abs(t_s - sorted_targets[ti]):
+                result_sorted[ti] = prev_idx
+            else:
+                result_sorted[ti] = frame_idx
+            ti += 1
+
+        prev_t, prev_idx = t_s, frame_idx
+    cap.release()
+
+    # remaining targets fall after the last decoded frame -- nearest is the last frame
+    while ti < len(sorted_targets):
+        result_sorted[ti] = prev_idx
+        ti += 1
+
+    out = [None] * len(target_times_s)
+    for i, r in zip(order, result_sorted):
+        out[i] = r
+    return out
 
 
 def frames_at_times(video_path, target_times_s):

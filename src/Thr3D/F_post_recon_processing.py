@@ -278,7 +278,7 @@ class Reconstruction:
             image  = self.preds["images"][row]  # (3, H, W), 0..1
             # already cam0-space -- see load_VGGT_O_predictions
             points = unproject(self.preds["depth"][row], self.preds["intrinsic"][row], self.preds["extrinsic"][row])
-            points = points.reshape(-1, 3).cpu().numpy()
+            points = points.reshape(-1, 3).float().cpu().numpy()
 
             #OPTIONAL TRANSFORMATIONS 
             #ROTATE and SCALE to real world (values derived from umeyay align vs calibrated RS trace)
@@ -294,8 +294,8 @@ class Reconstruction:
             elif s is not None:
                 points = points * s 
 
-            colors = image.permute(1, 2, 0).reshape(-1, 3).cpu().numpy()
-            confidence = conf.cpu().numpy()
+            colors = image.permute(1, 2, 0).reshape(-1, 3).float().cpu().numpy()
+            confidence = conf.float().cpu().numpy()
 
             points[:, 1:] *= -1  # match CUT3R's y-up/z-forward axis convention
             _write_ply(out_dir / f"{frame_idx:06d}.ply", points, colors, confidence)

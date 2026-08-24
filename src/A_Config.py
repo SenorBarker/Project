@@ -92,6 +92,7 @@ def recon_for_EVENT_dir(beat_key=None): return _beat(_with_experiment(case_dir()
 
 def mega_SAM_output_dir(): return _with_experiment(case_dir() / "036_MEGASAM_output") 
 def vggt_o_output_dir(): return _with_experiment(case_dir() / "035_VGGT_O_output")
+def vggt_output_dir(): return _with_experiment(case_dir() / "034_VGGT_output")
 def predictions_path(): return vggt_o_output_dir() / "predictions.npz"
 def cut3r_output_dir(): return _with_experiment(case_dir() / "035_CUT3R_output")
 def lingbot_map_dir(): return _with_experiment(case_dir() / "036_lingbot_map_output")

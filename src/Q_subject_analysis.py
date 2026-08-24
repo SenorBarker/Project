@@ -38,10 +38,16 @@ def subject_model_positions(recon, masks_dir):
     return subject_positions
 
 
-def meeting_calculator(A_real_dict, A_dict_entry, B_real_dict,B_dict_entry, lat_0= None, lon_0 = None, B_is_camera=True):
+def meeting_calculator(A_real_dict, A_dict_entry, B_real_dict,B_dict_entry, lat_0= None, lon_0 = None,
+                        B_is_camera=True, return_series=False):
     '''Returns dict of info about when movers A and B were closest together -- i.e. the incident happened.
     B is the camera by default; pass B_is_camera=False for a subject-vs-subject pair.
-    Also appends that info straight to the report CSV.'''
+    Also appends that info straight to the report CSV.
+
+    return_series=True additionally returns the full per-A-frame distance dict
+    (frame -> distance) that's computed internally on the way to the closest-approach
+    frame, instead of throwing it away -- e.g. for a continuous distance-from-camera
+    readout rather than just the single closest moment.'''
     if B_is_camera:
         A_frames = np.array(sorted(A_real_dict.keys()))
         A_pos    = np.array([A_real_dict[f] for f in A_frames])              # (N,3)
@@ -93,7 +99,54 @@ def meeting_calculator(A_real_dict, A_dict_entry, B_real_dict,B_dict_entry, lat_
         "{{camera_direction}}"             : None,
     }
     add_to_report(meeting_report)
+    if return_series:
+        distance_series = dict(zip(A_frames.tolist(), distances.tolist()))
+        return meeting_report, distance_series
     return meeting_report
+
+
+def build_screen_labels(job):
+    '''Merges the per-subject-per-frame fields needed for on-screen labelling
+    (position, speed, heading, distance from camera, confidence) into one dict:
+    job["screen_labels"][subject_slug][frame] = {"position", "speed_kmh", "heading",
+    "dist_cam", "confidence"}.
+
+    Pulls from job state that earlier cells already computed: subjects_real_pos /
+    subjects_positions (position), group_metrics (speed/heading),
+    subjects_distance_to_camera (distance -- only present for subjects meeting_pairs
+    paired against "camera"), subjects_confidence.'''
+    subjects = job.get("subjects_real_pos") or job.get("subjects_positions") or {}
+    group_metrics   = job.get("group_metrics") or {}
+    distance_to_cam = job.get("subjects_distance_to_camera") or {}
+    confidence      = job.get("subjects_confidence") or {}
+
+    screen_labels = {}
+    for slug in subjects:
+        pos_dict = subjects[slug]
+        frames   = sorted(pos_dict)
+
+        # group_metrics is keyed by the same subject slugs {"camera": ..., **subjects}
+        # was built from (see speed_direction's named/multi return)
+        mps, kmh, heading = group_metrics.get(slug, (None, None, None))
+        speed_by_frame   = dict(zip(frames, kmh))     if kmh     is not None else {}
+        heading_by_frame = dict(zip(frames, heading)) if heading is not None else {}
+
+        dist_by_frame = distance_to_cam.get(slug, {})
+        conf_by_frame = confidence.get(slug, {})
+
+        screen_labels[slug] = {
+            f: {
+                "position"  : pos_dict[f],
+                "speed_kmh" : speed_by_frame.get(f),
+                "heading"   : heading_by_frame.get(f),
+                "dist_cam"  : dist_by_frame.get(f),
+                "confidence": conf_by_frame.get(f),
+            }
+            for f in frames
+        }
+
+    job["screen_labels"] = screen_labels
+    return screen_labels
 
 
 def contact_frames(recon, A_masks_dir, B_masks_dir, touch_px=2,
@@ -388,32 +441,33 @@ def find_mask_centroids_in_model_space(subject_recon,
     depth_std_model = z_std[:, None] * ray_dir_model   # (N,3), NaN where z_std is NaN
 
     #cetroids and the Zdepth standard deviation in model space, plus the frame keys
-    return subject_centroids_model, frame_keys, depth_std_model
+    #and confidence weight (weight_sums_R -- already frame_keys-aligned via _rolling's [dense_idx])
+    return subject_centroids_model, frame_keys, depth_std_model, weight_sums_R
 
-def subject_to_metric_and_gps_space(
-            subject_recon,
-            masks_dir,
+def subject_centroids_to_metric_and_gps_space(
+            subject_centroids_model,
+            frame_keys,
+            _depth_std_model,
+            weight_sums_R,
             lat_0, lon_0,
             R_mw , s_mw,t_mw
+
            ):
-    """Turn  masks +  recon into GPS positions.
+    """Turns mask centroids from model space into global space and scales to metric.
 
     Projects mask centroids through model to world to get
     metres and lat/lon -- no separate RS-space hop needed since
     cam_poses_realworld_dict is already in real-world space.
-
-    recon: an already-loaded Reconstruction (see E_post_recon_processing.Reconstruction.load) --
-    shared with the other VGGT-O consumers (VGGT_O_preds_to_ply_export, projection_mapping_sequence)
-    so predictions.npz is only read/moved to the GPU once.
+    
     """   
-    subject_centroids_model, frame_keys, _depth_std_model = find_mask_centroids_in_model_space(subject_recon, masks_dir)
-    #moves straight from 3d-recon space into real-world frame of reference (metres, NESW)
+      
     sub_real      = transform_RST(subject_centroids_model, R_mw, s_mw, t_mw)
     sub_real_dict = dict(zip(frame_keys, sub_real))   # frame-keyed, same pattern as cam_poses_realworld_dict
+    sub_conf_dict = dict(zip(frame_keys, weight_sums_R))   # frame-keyed confidence, same alignment
     sub_latlon, _ = metres_to_latlong(sub_real, lat_0, lon_0)
     valid = ~np.isnan(sub_latlon).any(axis=1)
     return [(float(frame_keys[i]), *sub_latlon[i])
-                for i in range(len(frame_keys)) if valid[i]] , sub_real , sub_real_dict
+                for i in range(len(frame_keys)) if valid[i]] , sub_real , sub_real_dict, sub_conf_dict
     
 #------------helpers----------------
 

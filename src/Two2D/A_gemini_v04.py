@@ -116,7 +116,7 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
 
     response = client.models.generate_content(
         model="gemini-3.5-flash",
-        contents="Give a detailed Summary of this video. provide start and end times ." + FORMAT_SUFFIX,
+        contents="Give a detailed Summary of this video. provide start and end times. " + FORMAT_SUFFIX,
         config=_deterministic_config(cache_name)
     )
     print(response.text)
@@ -124,7 +124,7 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
 
     response2 = client.models.generate_content(
         model="gemini-3.5-flash",
-        contents=f"summary of the video:{response.text} \n\nQuestion:What objects, pertinent to the summary are visible and when? Provde times. don't subdivide the same object into multiple times unless there is a long gap" + FORMAT_SUFFIX,
+        contents=f"summary of the video:{response.text} \n\nQuestion:What objects, pertinent to the summary are visible and when? Provide times. don't subdivide the same object into multiple times unless there is a long gap" + FORMAT_SUFFIX,
         config=_deterministic_config(cache_name)
     )
     print(response2.text)

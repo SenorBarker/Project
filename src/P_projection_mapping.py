@@ -636,8 +636,8 @@ def _ortho_view_from_recon(recon, conf_thresh=5,
         )
 
     #camera now
-    x_cam = (points @ right).cpu().numpy()
-    y_cam = (points @ true_up).cpu().numpy()
+    x_cam = (points @ right).float().cpu().numpy()
+    y_cam = (points @ true_up).float().cpu().numpy()
 
     x_min, x_max = float(x_cam.min()), float(x_cam.max())
     y_min, y_max = float(y_cam.min()), float(y_cam.max())
@@ -703,7 +703,7 @@ def _ortho_view_from_recon(recon, conf_thresh=5,
     return new_view, ortho_params, out_width, out_height
 
 
-def BEV_tile_render_PM(recon, extra_indices, masks_dir=None, splat_radius=1,
+def BEV_tile_render_PM(recon, extra_indices, masks_dir=None, splat_radius=0,
                    confidence_threshold=5, margin_frac=0.05, out_path=None, analyse = False,
                    resolution="lores"):
     """Static orthographic top-down (BEV) still, fused from many frames via

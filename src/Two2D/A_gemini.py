@@ -160,7 +160,7 @@ def gemini_cache_video(video_path, query_dir, ttl="600s"):
     return cache.name
 
 
-def gemini_query_CSV_cached(prompt, asset_name, CSV_path, query_dir, extend_ttl=None):
+def gemini_query_CSV_cached(prompt, asset_name, query_dir, extend_ttl=None):
     """Query a previously created cache (see gemini_cache_video) for asset_name.
     Pass extend_ttl (e.g. "600s") to refresh the cache's expiry before querying."""
     client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
@@ -173,8 +173,6 @@ def gemini_query_CSV_cached(prompt, asset_name, CSV_path, query_dir, extend_ttl=
             name=cache_name,
             config=types.UpdateCachedContentConfig(ttl=extend_ttl),
         )
-    with open(CSV_path) as f:
-        csv_text = f.read()
 
     FORMAT_PREFIX = "Format your response as multiple short paragraphs separated by line breaks, not one continuous block of text.\n\n"
 

@@ -4,6 +4,11 @@ formatting is deterministic and identical across every run."""
 import json
 from pathlib import Path
 
+# Frames at which SAM3 offloads video+state to host RAM and gets unreliable
+# (see tracking_windows/_merge_spans below). A merge that would push a span
+# past this is refused rather than handed to the tracker.
+SAM3_MAX_TRACK_FRAMES = 650
+
 ARCHETYPE_LABELS = {
     "ESTABLISHER": "Opening shot",
     "EVENT_TRIGGER": "Event — trigger",
@@ -378,8 +383,28 @@ def build_tracking_requests(paper_edit_json_path: str | Path = None, fps: float 
     A gem_person_id dict entry groups under subject="person" (one class scan, not per-person).
     Which windows a beat contributes comes from tracking_windows -- normally its own,
     but a MAP beat sweeps the event footage when nothing else tracks anything."""
+    if not fps:
+        # Only read the video when the caller didn't already have fps -- keeps this
+        # callable (and testable) without the cv2/ffmpeg stack B_video_processing pulls in.
+        from A_Config import source_video_path
+        from Two2D.B_video_processing import video_fps
+        fps = video_fps(source_video_path())
+    max_span_seconds = SAM3_MAX_TRACK_FRAMES / fps
+
     data = json.loads(Path(paper_edit_json_path or paper_edit_path()).read_text(encoding="utf-8"))
     spans_by_subject = {}
+
+    # open existing detections csv if it exists and group frame indices for each thing
+    from A_Config import sam3_masks_dir
+    from run_models.A_ROBOFLOW_SAM3 import _slugify_subject
+    detections_dict = {}
+    detections_path = sam3_masks_dir() / "detections.csv"
+    if detections_path.exists():
+        import pandas as pd
+        detections = pd.read_csv(detections_path)
+        detections_dict = {
+            slug: set(sub["frame_idx"]) for slug, sub in detections.groupby("subject")
+        }
 
     # How many of each subject the whole video asks for, which is what a frame is
     # allowed to hold (plus leeway) before the tracker calls the prompt bad. Counted
@@ -428,7 +453,13 @@ def build_tracking_requests(paper_edit_json_path: str | Path = None, fps: float 
         # set() because the eight gem_person_id entries all collapse to subject
         # "person" and would otherwise queue the same span eight times -- _merge_spans
         # used to absorb that silently.
-        for start_s, end_s, beat_ids in (sorted(set(spans)) if swept else _merge_spans(spans)):
+        for start_s, end_s, beat_ids in (sorted(set(spans)) if swept
+                                          else _merge_spans(spans, max_span_seconds)):
+            # Check tracking hasn't already been done
+            start_frame, end_frame = round(start_s * fps), round(end_s * fps)
+            span_range = range(start_frame, end_frame + 1)
+            if detections_dict.get(_slugify_subject(subject), set()).intersection(span_range):
+                continue
             requests.append({"subject": subject, "start_s": start_s, "end_s": end_s,
                               "beat_ids": sorted(beat_ids),
                               "expected_count": expected_by_subject.get(subject)})
@@ -449,12 +480,21 @@ def build_meeting_requests(paper_edit_json_path: str | Path = None) -> list[tupl
     return pairs
 
 
-def _merge_spans(spans: list[tuple[float, float, tuple[str, ...]]]) -> list[tuple[float, float, set]]:
+def _merge_spans(spans: list[tuple[float, float, tuple[str, ...]]],
+                  max_span_seconds: float | None = None) -> list[tuple[float, float, set]]:
     """Merges overlapping/touching (start_s, end_s, beat_ids) spans into
-    their union, unioning beat_ids along with the time range."""
+    their union, unioning beat_ids along with the time range.
+
+    A merge that would produce a span longer than max_span_seconds is skipped --
+    the incoming span starts a new group instead of extending the last one. Fewer,
+    longer spans are cheaper to track, but not past the point where SAM3 itself
+    breaks (SAM3_MAX_TRACK_FRAMES); two spans that would fuse into a too-long job
+    are kept separate rather than handed to the tracker oversized."""
     merged = []
     for start_s, end_s, beat_ids in sorted(spans, key=lambda s: (s[0], s[1])):
-        if merged and start_s <= merged[-1][1]:
+        fits = (max_span_seconds is None
+                or max(merged[-1][1], end_s) - merged[-1][0] <= max_span_seconds) if merged else False
+        if merged and start_s <= merged[-1][1] and fits:
             merged[-1] = (merged[-1][0], max(merged[-1][1], end_s), merged[-1][2] | set(beat_ids))
         else:
             merged.append((start_s, end_s, set(beat_ids)))
