@@ -53,7 +53,7 @@ Rules the planning agent follows for paper edits. Every decision must cite a rul
     R5.1 — MAP synthetics are high prioirity. Always request one.  
     R5.2 — Use a google map only if geography matters. spatial questions like "where...", "how far" can be considered geographical questions.  
     R5.3 — MAP durations need to be as long as possible, without introducing clear recon errors.
-    R5.4 — RECON_CAM_POSES/RECON_3D need true multi-viewpoint coverage (multiple cameras or moving camera);  — flag [JUDGMENT CALL] if unstated. VGGT_O_RECON can work from a statrionary pan — only require that the description states the wearer/camera moved or turned during the span.
+    R5.4 — Where people are and where they go can be covered by a MAP. Use RECON_3D if something fast is happening that will be missed by the low sample rate of the map. 
     
 6. Structure & Pacing  
     R6.1 — Do not open with out-of-order soundbites, hooks or teasers
@@ -63,6 +63,7 @@ Rules the planning agent follows for paper edits. Every decision must cite a rul
     R6.5 — Separate data beats with other content  
     R6.6 — Maps cannot open unless geography is the story.  
     R6.7 — Never end on a map.
+    R6.8 — `PROJECTION_MAP` are action replays. They either go after the real beat that has the same source frames, or at the end of the video 
         
 7. Decision Reporting  
     R7.1 — Name  rejected alternatives and why.  

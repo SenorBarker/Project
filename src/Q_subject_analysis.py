@@ -259,7 +259,7 @@ def subject_direction(sub_real_dict):
   
 
 def find_mask_centroids_in_model_space(subject_recon,
-            masks_dir,RA = 1, analyse = False):
+            masks_dir, RA = 1, analyse = False, autocam=False, conf_thresh=0.0):
     '''Confidence-weighted centroid of every mask, one recon-worth at a time.
     No hard confidence cutoff: every in-mask pixel with nonzero depth contributes,
     weighted by its own depth_conf, so a frame where confidence never clears a fixed
@@ -294,12 +294,14 @@ def find_mask_centroids_in_model_space(subject_recon,
     ])   # (N,h,w) bool, resized to the depth's own native resolution -- no bilateral upsampling
     ys, xs = np.indices((h, w))   # ys: row-index grid, xs: col-index grid (np.indices order)
 
-    # 1) WEIGHT -- confidence, zeroed outside the mask and wherever depth is missing. never a
-    # hard cutoff, so a badly-reconstructed frame where confidence never clears a fixed threshold
-    # still degrades to a weighted average instead of dropping every pixel and going NaN.
+    # 1) WEIGHT -- confidence, zeroed outside the mask, wherever depth is missing, and
+    # (via conf_thresh) below a hard per-pixel confidence gate -- so a garbage pixel
+    # can't sneak weight in just for being inside the mask. Pixels that pass the gate
+    # still contribute proportional to (confs - 1), not equally, so a frame that's
+    # barely above threshold everywhere doesn't get the same pull as one confidently so.
     # confs - 1: depth_conf is floored at 1.0, not 0 -- subtracting the floor gives
     # garbage pixels zero weight instead of the ~20% pull raw confs would give them.
-    weights     = masks * (confs - 1) * (depths != 0)
+    weights     = masks * (confs - 1) * (depths != 0) * (confs >= conf_thresh)
     #key PARAMETER HERE!
     weight_sums = weights.sum(axis=(1, 2))
     valid       = weight_sums > 0
@@ -440,6 +442,32 @@ def find_mask_centroids_in_model_space(subject_recon,
     #project z_std into that frame of reference
     depth_std_model = z_std[:, None] * ray_dir_model   # (N,3), NaN where z_std is NaN
 
+    if autocam:
+        from P_projection_mapping import load_frame_inputs, unproject_masked
+        # box from every masked+confident pixel's own 3D point, not just each frame's
+        # single centroid -- a centroid-only box only ever captures where the subject's
+        # centre wandered, never its actual size.
+        # Build the box from THE SAME points the renderer draws -- unproject_masked is
+        # exactly what composite_overlay calls per frame (full-res mask, colour-guided
+        # upsampled depth). Re-deriving our own cloud from the low-res mask + raw depth
+        # instead put mask-edge pixels carrying background depth into the box, so it
+        # bounded points that are nowhere in the render.
+        centrality_weights = mask_centrality_weights(u, v, h, w)
+        mask_points = []
+        for f in np.asarray(frame_keys)[centrality_weights > 0]:
+            fi = load_frame_inputs(subject_recon, int(f), masks_dir)
+            rgb_full, mask, depth_low, conf_low, lowres_rgb, intrinsic_full, extrinsic = fi[:7]
+            if rgb_full is None or mask is None:
+                continue
+            world_points, _ = unproject_masked(mask, rgb_full, depth_low, conf_low,
+                                                lowres_rgb, intrinsic_full, extrinsic,
+                                                conf_thresh=conf_thresh)
+            if world_points is None:
+                continue
+            mask_points.append(world_points.cpu().numpy())
+        mask_points = np.concatenate(mask_points, axis=0)
+        return subject_centroids_model, frame_keys, depth_std_model, weight_sums_R, centrality_weights, mask_points
+
     #cetroids and the Zdepth standard deviation in model space, plus the frame keys
     #and confidence weight (weight_sums_R -- already frame_keys-aligned via _rolling's [dense_idx])
     return subject_centroids_model, frame_keys, depth_std_model, weight_sums_R
@@ -505,3 +533,83 @@ def rolling_by_frame(frames, meas, window):
     #only run if I haven't got this for free.. 
    # if  composite is None:
     #    subject_positions = subject_world_positions(frames_list, depth_path, mask_path, transform_matrices)
+
+##-------AUTO CAM
+    
+def auto_camera_position(extrinsics, weights):
+    '''Weighted average of camera CENTRES (not rotations) across frames with
+    weight>0 -- "where the operators stood", weighted by mask centrality.
+    extrinsics is (N,3,4) model-to-cam (P_cam = R@P_model + t), so a frame's
+    camera centre in model space is C = -R^T @ t (the point where P_cam=0).
+    Used with look_at_rotation() instead of auto_camera_rotation() when the
+    recorded camera orientations aren't reliably pointed at the subject
+    (e.g. a handheld shoot) -- position is a much more robust signal than
+    orientation in that case, so aim is solved geometrically via look-at
+    instead of inherited from a shaky average of raw rotations.'''
+    valid = weights > 0
+    if not np.any(valid):
+        raise ValueError("auto_camera_position: no frame has weight > 0 -- no usable subject mask in this recon.")
+    R = extrinsics[valid, :3, :3]
+    t = extrinsics[valid, :3, 3]
+    centres = -np.einsum("nij,nj->ni", np.transpose(R, (0, 2, 1)), t)
+    w = weights[valid]
+    return (centres * w[:, None]).sum(axis=0) / w.sum()
+
+def look_at_rotation(eye, target, up):
+    '''Camera-to-model rotation that points the camera's forward axis at `target`
+    from `eye`, holding roll level against `up` (e.g. the real-world up direction
+    rotated into model space) rather than inheriting whatever roll the source
+    footage happened to have. Axis convention matches preds["extrinsic"]/
+    P_projection_mapping.reproject(): +x=right, +y=down (image v grows downward),
+    +z=forward. `up` only needs to be roughly upward and non-parallel to the
+    eye->target direction -- it's just used to disambiguate roll, not followed
+    exactly (the actual "up" of the result is whatever's left over after right
+    and forward are fixed).'''
+    forward = target - eye
+    forward = forward / np.linalg.norm(forward)
+    right = np.cross(forward, up)
+    right = right / np.linalg.norm(right)
+    down = np.cross(forward, right)
+    return np.stack([right, down, forward], axis=1)   # (3,3) columns = camera axes in model space
+
+def subject_oriented_box(points_model, margin=0.0, percentile=100.0):
+    '''PCA-oriented bounding box: returns the 8 corners (8,3) in model space, ordered
+    the same way as np.meshgrid(..., indexing="ij") so the usual edge list still works.
+    margin: padding per side as a FRACTION of each axis' own extent (0.1 = 10% each side),
+    not model units -- so one value works whatever the recon's scale.
+    percentile: central % of points kept per axis (100 = raw min/max). At 100 each face
+    is pinned by 1-5 stray points out of ~90k, so the box sits well outside the subject.'''
+    pts = points_model[~np.isnan(points_model).any(axis=1)]
+    if pts.shape[0] < 2:
+        raise ValueError("subject_oriented_box: need at least 2 valid points.")
+    centre = pts.mean(axis=0)
+    centred = pts - centre
+    _, eigvecs = np.linalg.eigh(np.cov(centred, rowvar=False))
+    axes = eigvecs[:, ::-1]            # columns = principal axes, largest variance first
+    local = centred @ axes             # points in the box's own frame
+    if percentile >= 100:
+        lo, hi = local.min(axis=0), local.max(axis=0)
+    else:
+        half = (100.0 - percentile) / 2.0
+        lo, hi = np.percentile(local, [half, 100.0 - half], axis=0)
+    pad = margin * (hi - lo)   # fraction of each axis' own extent, so it's scale-free
+    lo = lo - pad
+    hi = hi + pad
+    corners_local = np.stack(np.meshgrid([lo[0], hi[0]], [lo[1], hi[1]], [lo[2], hi[2]],
+                                          indexing="ij"), axis=-1).reshape(-1, 3)
+    return corners_local @ axes.T + centre
+
+
+def mask_centrality_weights(col, row, h, w):
+    '''Per-frame weight for how central the subject's mask centroid (col,row) is in its
+    frame, normalized to [-1,1] about the image center: w = (1-|x|)*(1-|y|). 1 = dead
+    centre, 0 = at the edge. NaN (no mask that frame) or a frame with no weight -> 0.'''
+    x = (col - w / 2.0) / (w / 2.0)
+    y = (row - h / 2.0) / (h / 2.0)
+    weights = (1 - np.abs(x)) * (1 - np.abs(y))
+    weights = np.nan_to_num(weights, nan=0.0)
+    return np.clip(weights, 0.0, None)
+
+
+
+#------- auto cam

@@ -334,7 +334,8 @@ def composite_overlay(recon,
                       conf_thresh = 5,
                       ortho_params=None,
                       canvas_size=None,
-                      analyse = False
+                      analyse = False,
+                      use_lowres_images=False
                       ):
     """Paint cam(main)'s own photo with pixels from cam(extra) frames wherever
     cam(extra) has something CLOSER TO CAM(MAIN)
@@ -358,13 +359,19 @@ def composite_overlay(recon,
     # preds arrays are indexed by row position, so translate before indexing preds.
     recons = _as_recon_list(recon)
 
+
+
     if main_idx is not None:
-        # Resolution is constant for the whole capture, so always size the canvas off
-        # recons[0]'s own row-0 frame (its anchor/reference frame -- same one
-        # get_full_res_camera below keys off) rather than off extra_indices[0], which is
-        # an arbitrary real frame number that may itself be missing on disk.
-        row0_frame_num = next(fn for fn, row in recons[0].frame_to_row.items() if row == 0)
-        full_h, full_w = load_full_res_frame(recons[0].frames_dir, row0_frame_num).shape[:2]
+        if use_lowres_images:
+            # no disk read needed -- size the canvas off preds' own native resolution.
+            full_h, full_w = recons[0].preds["depth"].shape[1:]
+        else:
+            # Resolution is constant for the whole capture, so always size the canvas off
+            # recons[0]'s own row-0 frame (its anchor/reference frame -- same one
+            # get_full_res_camera below keys off) rather than off extra_indices[0], which is
+            # an arbitrary real frame number that may itself be missing on disk.
+            row0_frame_num = next(fn for fn, row in recons[0].frame_to_row.items() if row == 0)
+            full_h, full_w = load_full_res_frame(recons[0].frames_dir, row0_frame_num).shape[:2]
 
         main_rgb, _, depth_main, depth_conf_main, lowres_rgb_main, intrinsic_main_full, extrinsic_main, sigma_main, main_recon_idx = load_frame_inputs(recons, main_idx, masks_dir)
         if main_rgb is None:
@@ -373,7 +380,7 @@ def composite_overlay(recon,
                 f"or its image file is missing -- check it's within a shard's frame_range"
             )
         depth_main_full, valid_main = joint_bilateral_upsample(
-            depth_main, depth_conf_main, lowres_rgb_main, main_rgb, sigma_main, conf_thresh=conf_thresh, analyse = analyse
+            depth_main, depth_conf_main, lowres_rgb_main, main_rgb, sigma_main, conf_thresh=conf_thresh
         )  # already in cam(main)'s own frame
 
         canvas = main_rgb.clone()
@@ -757,8 +764,11 @@ def projection_mapping_sequence(
         point_cloud_xforms=None,
         new_view = None,
         confidence_threshold = 5,
-        framerate=15,
-        ffmpeg_path="/opt/conda/envs/Msc2/bin/ffmpeg",):
+        frame_rate=15,
+        ffmpeg_path="/opt/conda/envs/Msc2/bin/ffmpeg",
+        splat_radius = 1,
+        use_lowres_images=False,
+        name = None):
 
     """Composite each frame in extra_indices onto main_idx's photo and write PNGs.
     recon: single Reconstruction (existing behaviour) or a list of shards -- see
@@ -779,11 +789,18 @@ def projection_mapping_sequence(
 
         comp, subject_pos = composite_overlay(recon, main_idx, group, masks_dir=masks_dir,
                                               point_cloud_xforms=point_cloud_xforms,
-                                              new_view=new_view, conf_thresh=confidence_threshold)
+                                              new_view=new_view, conf_thresh=confidence_threshold, 
+                                                use_lowres_images=use_lowres_images,
+                                              splat_radius = splat_radius)
 
         subject_positions.update(subject_pos)
         out = (comp.clamp(0, 1) * 255).byte().cpu().numpy()
-        frame_path = assets_dir()/ "projection_frames"/ f"{asset_name()}_proj_{tag}.png"
+        if name == None:
+            frame_path = assets_dir()/ "projection_frames"/ f"{asset_name()}_proj_{tag}_aug.png"
+        else:
+            frame_path = assets_dir()/ "projection_frames"/ name 
+
+   
         cv2.imwrite(str(frame_path), cv2.cvtColor(out, cv2.COLOR_RGB2BGR))
         frame_paths.append(frame_path)
         frame_tags.append(tag)
@@ -793,7 +810,7 @@ def projection_mapping_sequence(
     #sequence. List each file explicitly via the concat demuxer instead.
     if frame_paths:
         concat_list_path = assets_dir() /"projection_frames" / f"{asset_name()}_concat_list.txt"
-        frame_duration = 1 / framerate
+        frame_duration = 1 / frame_rate
         with open(concat_list_path, "w") as f:
             for frame_path in frame_paths:
                 f.write(f"file '{frame_path.resolve()}'\n")
@@ -828,3 +845,57 @@ def projection_mapping_sequence(
     add_to_asset_list(for_report)
 
     return subject_positions
+
+
+#---------------------autocam
+def solve_auto_camera_extrinsic(points, target, R_c2w, intrinsic, image_hw,
+                                 extra_distance_margin=0.0, dtype=None):
+    """Translation-only solve for an auto camera: rotation R_c2w and intrinsic are
+    FIXED (no zoom, no re-orient) -- this only finds how far back along its own viewing
+    axis to place the camera so every point in `points` fits in frame. Same [R|t] /
+    P_cam=R@P_world+t convention as reproject() and preds["extrinsic"].
+
+    points: (N,3) world/model-space points to frame -- the subject's actual points
+        (e.g. Q_subject_analysis' mask_points), 
+    target: (3,) the point to centre in frame (also what R_c2w should be aimed at).
+    R_c2w: (3,3) fixed camera-to-model rotation (e.g. from
+        Q_subject_analysis.look_at_rotation).
+    intrinsic: (3,3) fixed intrinsic (fx,fy,cx,cy) -- native low-res is fine, since
+        fx/w and fy/h are resolution-invariant (see scale_intrinsic/get_full_res_camera).
+    image_hw: (h, w) resolution intrinsic was measured at.
+    extra_distance_margin: extra pull-back distance (same units as points), on top of
+        what's needed to fit them.
+
+    Returns a (3,4) torch tensor on DEVICE, ready for projection_mapping_sequence's
+    new_view=... (must be in shard 0's raw model space, same as the inputs here).
+    """
+    points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    target = np.asarray(target, dtype=np.float64)
+    R_c2w = np.asarray(R_c2w, dtype=np.float64)
+    intrinsic = np.asarray(intrinsic, dtype=np.float64)
+    h, w = image_hw
+    R_w2c = R_c2w.T
+
+    # points re-expressed in the camera's own (rotated) axes, relative to target
+    rel = (points - target) @ R_w2c.T
+
+    # solve d PER POINT: a point's actual depth from the camera is d + rel[:,2]
+    # (nearer points are closer than target, so they're magnified more than a
+    # target-depth estimate accounts for). Require, for every point:
+    #   |rel[:,0]| * fx / (d + rel[:,2]) <= w/2   (fits horizontally)
+    #   |rel[:,1]| * fy / (d + rel[:,2]) <= h/2   (fits vertically)
+    #   d + rel[:,2] > 0                          (in front of the camera)
+    # each rearranges to a lower bound on d; take the max across all points/axes.
+    fx, fy = intrinsic[0, 0], intrinsic[1, 1]
+    req_x = np.abs(rel[:, 0]) * fx / (w / 2.0) - rel[:, 2]
+    req_y = np.abs(rel[:, 1]) * fy / (h / 2.0) - rel[:, 2]
+    req_z = -rel[:, 2]
+    d = max(req_x.max(), req_y.max(), req_z.max()) + extra_distance_margin
+
+    forward = R_c2w[:, 2]
+    C = target - d * forward   # camera centre, model space
+    t = -R_w2c @ C             # P_cam = R_w2c @ P_model + t
+
+    new_view_np = np.concatenate([R_w2c, t[:, None]], axis=1)   # (3,4)
+    dtype = dtype or torch.float32
+    return torch.as_tensor(new_view_np, dtype=dtype, device=DEVICE)

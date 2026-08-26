@@ -1,7 +1,7 @@
 { "Overview1" : " This is a question of `what  would you do? if you had to edit and analyse an ego-centric video, according to a set brief",
   "Overview2" : " We have created a video summariser that does this automatically. it edits the video, gemerates a map that shows where and what the camera filmed",
   "overview3" :  "This Json is to label the unedited videos, which will be used as a GT vs the video the summariser makes",
-  "Overview4" : "populate all the fields as you watch the video. It's in two parts: how the video makes you feel, and what video spans are important , or really not imppant and should never be included ",
+  "Overview4" : "populate all the fields as you watch the video. It's in two parts: how the video makes you feel, and what video spans are important , or really not important and should never be included ",
   
 "case_name": "402_Hide_n_seek_sw07",
   "brief": "(read this it shows what the goal is for the summariser): Make a video summary of this video, focussing on X.",
@@ -27,9 +27,8 @@
       "start_time_sec": 45,
       "end_time_min": 1,
       "end_time_s"  : 6,
-      "Critical_event" : true,
-      "delete" : false,
-      
+      "Importance" : critical, terrible, n/a,
+            
       "tracked_subject": [
         {"item": "person", "descriptor": "Woman in black shirt, sunglasses, khaki pants"},
         {"item": "telephone", "descriptor": "the telephone in the woman's hand"}],

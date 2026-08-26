@@ -122,7 +122,7 @@ def megasam_to_reconstruction(frames_dir, npz_path):
     if images.max() > 1.5:  # 0..255 -> 0..1, mirrors every other loader's convention
         images = images / 255.0
     if "uncertainty" in data:
-        depth_conf = (1.0 / _as_nhw(data["uncertainty"]).astype(np.float32))
+        depth_conf = ( _as_nhw(data["uncertainty"]).astype(np.float32))#IT ISNT UNCERTAINTY!
     else:
         depth_conf = np.ones_like(depth, dtype=np.float32)
 
