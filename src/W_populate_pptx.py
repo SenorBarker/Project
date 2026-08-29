@@ -238,25 +238,20 @@ def _load_csv_dict(path):
     return d
 
 
-PERSON_KEY_RE = re.compile(r"^person-(\d+)_(.+)$")
+PERSON_KEY_RE = re.compile(r"^person-([A-Za-z0-9]+)_(.+)$")
 
 
 def _renumber_person_keys(report):
-    '''person-N is Gemini's own person_id numbering -- stable per person
-    within a run, and (per Gemini reading frames in order) already in
-    first-appearance order, but not necessarily dense: a video's beats
-    might only ever reference person-2 and person-5. Renumber to a dense
-    1, 2, 3... run, preserving that same relative order, so a template can
-    pre-author fixed "person-1_...", "person-2_..." slots regardless of
-    which raw ids a given video happens to produce.'''
-    raw_ids = sorted({int(m.group(1)) for k in report if (m := PERSON_KEY_RE.match(k))})
+    '''Renumbers person-<id> keys (letter-coded, first-appearance order) to
+    dense person-1, person-2... for the template's fixed slots.'''
+    raw_ids = sorted({m.group(1) for k in report if (m := PERSON_KEY_RE.match(k))})
     id_map = {raw: i + 1 for i, raw in enumerate(raw_ids)}
 
     renumbered = {}
     for key, value in report.items():
         m = PERSON_KEY_RE.match(key)
         if m:
-            key = f"person-{id_map[int(m.group(1))]}_{m.group(2)}"
+            key = f"person-{id_map[m.group(1)]}_{m.group(2)}"
         renumbered[key] = value
     return renumbered
 

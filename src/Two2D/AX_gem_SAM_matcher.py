@@ -49,22 +49,30 @@ def load_SAM_dets(raw_detection_rows=None, SAM_dets_path=None):
         return list(csv.DictReader(f))
 
 
-def gem_person_targets_lookup(fps, paper_edit_json_path=None, gem_people_json_path=None):
+def gem_person_targets_lookup(video_path=None, paper_edit_json_path=None, gem_people_json_path=None):
     """gem_person_id -> {appearance_targets: [{box_2d, target_frame}, ...], beat_ids}.
     Matching-candidates only -- the eventual analysis_2d_for_decisions entry
     is still built from frames_by_instance once matching resolves a track_id."""
-    if paper_edit_json_path is None or gem_people_json_path is None:
+    if paper_edit_json_path is None or gem_people_json_path is None or video_path is None:
         import A_Config
         if paper_edit_json_path is None:
-            paper_edit_json_path = A_Config.agent_p_output_dir() / f"{A_Config.case_name()}_paper_edit_draft.json"
+            from render_paper_edit import paper_edit_path
+            paper_edit_json_path = paper_edit_path("draft")
         if gem_people_json_path is None:
             gem_people_json_path = A_Config.query_dir() / f"{A_Config.case_name()}_people.json"
+        if video_path is None:
+            video_path = A_Config.source_video_path()
 
     paper_edit = json.loads(Path(paper_edit_json_path).read_text(encoding="utf-8"))
     gem_people = json.loads(Path(gem_people_json_path).read_text(encoding="utf-8"))
 
-    gem_person_targets = {}  # return value, built up below
-
+    # Pass 1: walk beats -> tracking requests (cheap, in-memory) to find every
+    # distinct gem_person_id referenced and which beats reference it --
+    # appearance_targets only need building once per person (same
+    # gem_person["appearances"] regardless of which beat named them), same as
+    # the original per-gem_person_id-first-seen behavior.
+    person_obj_by_id = {}
+    beat_ids_by_person = {}
     for beat in paper_edit["beats"]:
         producer_tracking_requests = beat.get("tracked_subject") or []
         if not producer_tracking_requests:
@@ -74,35 +82,46 @@ def gem_person_targets_lookup(fps, paper_edit_json_path=None, gem_people_json_pa
             if not isinstance(request, dict):
                 continue
             gem_person_id = request["gem_person_id"]
-            gem_person = next(p for p in gem_people if p["person_id"] == gem_person_id)
+            if gem_person_id not in person_obj_by_id:
+                person_obj_by_id[gem_person_id] = next(p for p in gem_people if p["person_id"] == gem_person_id)
+            beat_ids_by_person.setdefault(gem_person_id, set()).update(beat.get("beat_id") or [])
 
-            appearance_targets = [
-                {"box_2d": a["box_2d"], "target_frame": round((a["start_s"] + 0.5) * fps)}
-                for a in gem_person["appearances"]
-            ]
+    # Pass 2: flatten every distinct person's appearances into one batched
+    # real-timestamp->frame lookup, instead of round(seconds*fps) per
+    # appearance -- inaccurate on VFR sources. Mirrors A_gemini_v02/03/04.py's
+    # already-correct pattern for this same kind of conversion.
+    from Two2D.B_video_processing import frame_indices_at_times
+    pending = [(gem_person_id, a["box_2d"], a["start_s"] + 0.5)
+               for gem_person_id, gem_person in person_obj_by_id.items()
+               for a in gem_person["appearances"]]
+    target_times_s = [p[2] for p in pending]
+    target_frames = frame_indices_at_times(video_path, target_times_s) if target_times_s else []
 
-            if gem_person_id not in gem_person_targets:
-                gem_person_targets[gem_person_id] = {"appearance_targets": appearance_targets, "beat_ids": set()}
-            gem_person_targets[gem_person_id]["beat_ids"].update(beat.get("beat_id") or [])
+    gem_person_targets = {}  # return value, built up below
+    for (gem_person_id, box_2d, _), target_frame in zip(pending, target_frames):
+        gem_person_targets.setdefault(gem_person_id, {"appearance_targets": [], "beat_ids": set()})
+        gem_person_targets[gem_person_id]["appearance_targets"].append(
+            {"box_2d": box_2d, "target_frame": target_frame})
 
-    for target in gem_person_targets.values():
-        target["beat_ids"] = sorted(target["beat_ids"])
+    for gem_person_id, target in gem_person_targets.items():
+        target["beat_ids"] = sorted(beat_ids_by_person.get(gem_person_id, set()))
 
     return gem_person_targets
 
 
-def match_gem_people_to_sam(vid_w=None, vid_h=None, fps=None, gem_person_targets=None, SAM_dets=None, iou_threshold=0.1):
+def match_gem_people_to_sam(vid_w=None, vid_h=None, video_path=None, gem_person_targets=None, SAM_dets=None, iou_threshold=0.1):
     """gem_person_id -> sorted list of matched track_id (one to many --
     different appearances can land in different spans, where SAM3's
     track_id numbering restarts, so the same person legitimately
     matches more than one track_id across the whole case)."""
-    if vid_w is None or vid_h is None or fps is None:
+    if vid_w is None or vid_h is None or video_path is None:
         import A_Config
         from Two2D.B_video_processing import video_dims
-        vid_w, vid_h, fps = video_dims(A_Config.source_video_path())
+        video_path = video_path or A_Config.source_video_path()
+        vid_w, vid_h, _ = video_dims(video_path)
 
     if gem_person_targets is None:
-        gem_person_targets = gem_person_targets_lookup(fps)
+        gem_person_targets = gem_person_targets_lookup(video_path)
     if SAM_dets is None:
         SAM_dets = load_SAM_dets()
 

@@ -77,7 +77,7 @@ def footprint_size(full_res_shape, lowres_shape):
     return full_w / low_w, full_h / low_h
 
 
-def joint_bilateral_upsample(lowres_depth, lowres_conf, lowres_rgb, full_rgb, sigma_xy, radius=1, conf_thresh = 5):
+def joint_bilateral_upsample(lowres_depth, lowres_conf, lowres_rgb, full_rgb, sigma_xy, radius=1, conf_thresh = 5, eqn = "linear", sig = 0.1, sigr = 0.1):
     """Upsample lowres_depth (H', W') to full_rgb's (H, W) resolution, guided by color.
     Weight = spatial gaussian (sigma fixed = footprint size, baked in via the 0.5
     factor below) * color gaussian (sigma = local color variance, auto per-pixel).
@@ -124,28 +124,28 @@ def joint_bilateral_upsample(lowres_depth, lowres_conf, lowres_rgb, full_rgb, si
             v_sample = valid[ny_c, nx_c]#is this a valid depth
             sample_rgb = lowres_rgb[ny_c, nx_c]  # the model's own colour for this depth sample -- no full-res round-trip
 
+            if eqn == "linear":
+                #bilinear
+                spatial_w = (1 - (gx - nx.float()).abs()).clamp(min=0) * (1 - (gy - ny.float()).abs()).clamp(min=0)
+                #colour linear
+                color_dist2 = ((full_rgb - sample_rgb) ** 2).sum(dim=-1)
+                if (color_dist2 > 3).any():
+                    print("COLOUR ERROR", color_dist2)
+                
+                color_w = 1 - color_dist2 / 3
+                w = spatial_w * color_w * in_bounds.float() * v_sample
             
-            #bilinear
-            spatial_w = (1 - (gx - nx.float()).abs()).clamp(min=0) * (1 - (gy - ny.float()).abs()).clamp(min=0)
-            #colour linear
-            color_dist2 = ((full_rgb - sample_rgb) ** 2).sum(dim=-1)
-            if (color_dist2 > 3).any():
-                print("COLOUR ERROR", color_dist2)
+            else:
+                # double-Gaussian joint bilateral weight, same variable names as your function
+                # (needs two new params this function doesn't have: sigma_s, sigma_r)
+                sigma_s = sig
+                sigma_r = sigr
+                spatial_dist2 = (gx - nx.float()) ** 2 + (gy - ny.float()) ** 2      # ||p-q||^2
+                spatial_w = torch.exp(-spatial_dist2 / (2 * sigma_s ** 2))          # domain Gaussian
+                color_dist2 = ((full_rgb - sample_rgb) ** 2).sum(dim=-1)             # ||I_p-I_q||^2
+                color_w = torch.exp(-color_dist2 / (2 * sigma_r ** 2))              # range Gaussian
+                w = spatial_w * color_w * in_bounds.float() * v_sample               # same combine as your code
             
-            color_w = 1 - color_dist2 / 3
-            w = spatial_w * color_w * in_bounds.float() * v_sample
-            
-            '''
-            # double-Gaussian joint bilateral weight, same variable names as your function
-            # (needs two new params this function doesn't have: sigma_s, sigma_r)
-            sigma_s = 0.1
-            sigma_r = 0.1
-            spatial_dist2 = (gx - nx.float()) ** 2 + (gy - ny.float()) ** 2      # ||p-q||^2
-            spatial_w = torch.exp(-spatial_dist2 / (2 * sigma_s ** 2))          # domain Gaussian
-            color_dist2 = ((full_rgb - sample_rgb) ** 2).sum(dim=-1)             # ||I_p-I_q||^2
-            color_w = torch.exp(-color_dist2 / (2 * sigma_r ** 2))              # range Gaussian
-            w = spatial_w * color_w * in_bounds.float() * v_sample               # same combine as your code
-            '''
       
 
             out_depth += w * d_sample
@@ -259,7 +259,7 @@ def crop_to_mask_region(mask, extra_rgb, depth_low, conf_low, lowres_rgb, intrin
     return rgb_crop, mask_crop, depth_crop, conf_crop, lowres_rgb_crop, intrinsic_crop, (x0, y0)
 
 
-def unproject_masked(mask, rgb_full, depth_low, conf_low, lowres_rgb, intrinsic_full, extrinsic, margin=8, conf_thresh=5):
+def unproject_masked(mask, rgb_full, depth_low, conf_low, lowres_rgb, intrinsic_full, extrinsic, margin=8, conf_thresh=5,eqn="linear", sig = 0.1, sigr = 0.1):
     """Unproject the pixels covered by `mask` to VGGT-O world-space points.
     Up-reses the depth to fit the mask using jonit bilateral upsample
 
@@ -275,7 +275,7 @@ def unproject_masked(mask, rgb_full, depth_low, conf_low, lowres_rgb, intrinsic_
     rgb_crop, mask_crop, depth_crop, conf_crop, lowres_rgb_crop, intrinsic_crop, _ = crop_to_mask_region(
         mask, rgb_full, depth_low, conf_low, lowres_rgb, intrinsic_full, margin=margin
     )
-    depth_crop_full, valid_crop = joint_bilateral_upsample(depth_crop, conf_crop, lowres_rgb_crop, rgb_crop, sigma, conf_thresh=conf_thresh)
+    depth_crop_full, valid_crop = joint_bilateral_upsample(depth_crop, conf_crop, lowres_rgb_crop, rgb_crop, sigma, conf_thresh=conf_thresh, eqn = eqn, sig = sig, sigr=sigr)
     world_points = unproject(depth_crop_full, intrinsic_crop, extrinsic)
     keep = mask_crop & valid_crop
     return world_points[keep], rgb_crop[keep]#mask pixels with no usable upsample support are dropped too
@@ -335,7 +335,10 @@ def composite_overlay(recon,
                       ortho_params=None,
                       canvas_size=None,
                       analyse = False,
-                      use_lowres_images=False
+                      use_lowres_images=False,
+                      eqn = "linear", 
+                      sig = 0.1,
+                      sigr = 0.1
                       ):
     """Paint cam(main)'s own photo with pixels from cam(extra) frames wherever
     cam(extra) has something CLOSER TO CAM(MAIN)
@@ -380,7 +383,7 @@ def composite_overlay(recon,
                 f"or its image file is missing -- check it's within a shard's frame_range"
             )
         depth_main_full, valid_main = joint_bilateral_upsample(
-            depth_main, depth_conf_main, lowres_rgb_main, main_rgb, sigma_main, conf_thresh=conf_thresh
+            depth_main, depth_conf_main, lowres_rgb_main, main_rgb, sigma_main, conf_thresh=conf_thresh, eqn = eqn, sig = sig, sigr=sigr
         )  # already in cam(main)'s own frame
 
         canvas = main_rgb.clone()
@@ -428,7 +431,7 @@ def composite_overlay(recon,
 
         if masks_dir is None:
             # masking is off entirely -- unproject the whole frame
-            depth_extra_full, valid_extra = joint_bilateral_upsample(depth_extra, depth_conf_extra, lowres_rgb_extra, extra_rgb, sigma_extra, conf_thresh=conf_thresh)
+            depth_extra_full, valid_extra = joint_bilateral_upsample(depth_extra, depth_conf_extra, lowres_rgb_extra, extra_rgb, sigma_extra, conf_thresh=conf_thresh, eqn = eqn, sig = sig, sigr=sigr)
             world_points_extra = unproject(depth_extra_full, intrinsic_extra_full, extrinsic_extra).reshape(-1, 3)
             extra_rgb = extra_rgb.reshape(-1, 3)
             valid_extra = valid_extra.reshape(-1)
@@ -768,17 +771,29 @@ def projection_mapping_sequence(
         ffmpeg_path="/opt/conda/envs/Msc2/bin/ffmpeg",
         splat_radius = 1,
         use_lowres_images=False,
-        name = None):
+        name = None,
+        out_dir_name = "projection_frames",
+        eqn = "linear",
+        sig = 0.1,
+        sigr= 0.1
+        ):
 
     """Composite each frame in extra_indices onto main_idx's photo and write PNGs.
     recon: single Reconstruction (existing behaviour) or a list of shards -- see
     composite_overlay. main_idx/extra_indices only need to share a shard when recon
     is a single Reconstruction; with a multi-shard list they may come from different
     shards, in which case point_cloud_xforms must also be passed.
+
+    out_dir_name: subfolder of assets_dir() to write into -- defaults to the bare
+    "projection_frames" (existing behaviour), but a per-beat caller should pass
+    f"projection_frames_{beat_id}", the same beat-suffixed convention
+    _map_mezzanine_clip already expects for GOOGLE_MAP/BEV_MAP (see its docstring)
+    -- otherwise two PROJECTION_MAP beats in one paper edit overwrite each other.
+
     Returns dict of {frame_idx: world_position} for each frame with a valid subject detection."""
     subject_positions = {}
     frame_paths = []
-    (assets_dir() / "projection_frames").mkdir(parents=True, exist_ok=True)
+    (assets_dir() / out_dir_name).mkdir(parents=True, exist_ok=True)
     frame_tags = []
     for e_idx in extra_indices:
         # an entry is either one frame number (one extra per output frame) or a
@@ -791,14 +806,15 @@ def projection_mapping_sequence(
                                               point_cloud_xforms=point_cloud_xforms,
                                               new_view=new_view, conf_thresh=confidence_threshold, 
                                                 use_lowres_images=use_lowres_images,
-                                              splat_radius = splat_radius)
+                                              splat_radius = splat_radius, eqn = eqn , sig =sig, sigr=sigr)
 
         subject_positions.update(subject_pos)
         out = (comp.clamp(0, 1) * 255).byte().cpu().numpy()
         if name == None:
-            frame_path = assets_dir()/ "projection_frames"/ f"{asset_name()}_proj_{tag}_aug.png"
+            frame_path = assets_dir()/ out_dir_name/ f"{asset_name()}_proj_{tag}_aug.png"
         else:
-            frame_path = assets_dir()/ "projection_frames"/ name 
+            frame_path = assets_dir()/ out_dir_name/ name
+            print(frame_path)
 
    
         cv2.imwrite(str(frame_path), cv2.cvtColor(out, cv2.COLOR_RGB2BGR))
@@ -809,7 +825,7 @@ def projection_mapping_sequence(
     #pattern (frame_%04d.png) can't be used - it requires a contiguous +1
     #sequence. List each file explicitly via the concat demuxer instead.
     if frame_paths:
-        concat_list_path = assets_dir() /"projection_frames" / f"{asset_name()}_concat_list.txt"
+        concat_list_path = assets_dir() / out_dir_name / f"{asset_name()}_concat_list.txt"
         frame_duration = 1 / frame_rate
         with open(concat_list_path, "w") as f:
             for frame_path in frame_paths:

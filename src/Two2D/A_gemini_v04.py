@@ -7,7 +7,7 @@ import json
 import dotenv
 import cv2
 
-from Two2D.B_video_processing import frames_at_times, video_fps
+from Two2D.B_video_processing import frames_at_times, video_fps, _probe_format
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 from A_Config import asset_name , assets_dir
@@ -37,20 +37,35 @@ def draw_point_overlay(dets, native_frame, out_path):
 
 
 PEOPLE_SUFFIX = """
-After your response, append a <machine> block with this exact JSON:
+Reply with ONLY the <machine> block below and nothing else -- no prose, no
+preamble, no written account of the video. The prose is never saved by the
+pipeline, and generating it spends the output-token budget the JSON needs:
+a long enough prose answer is truncated before the block is ever reached,
+leaving nothing to parse.
+Emit exactly this JSON:
 <machine>
 {"people": [{"person_id": "...", "descriptor": "...", "appearances": [{"start_s": 0, "end_s": 0, "box_2d": [0, 0, 0, 0]}]}]}
 </machine>
 Give every distinct person who appears anywhere in the video a stable person_id
-(short, e.g. "person-01", "person-02") -- the same person must keep the same person_id
+(Starting "person-A", "person-B") -- the same person must keep the same person_id
 across every appearance, even in separate, non-contiguous time windows. "descriptor"
-is a short human-readable description (role, clothing, position) to help a human
-tell people apart, but is not used to identify them programmatically -- person_id is
-the only identity key. List every time window (start_s, end_s, integer seconds) that
-person is visible, across the whole video, as separate entries in "appearances". For
-each appearance also give "box_2d": that person's 2D bounding box (normalized 0-1000,
-[y0,x0,y1,x1]) at start_s of that window. Box only, no mask.
+is a short human-readable description (distinguishing features: appearance, hair, skin, clothing, position, role) to help a human
+tell people apart. Each frame, ask: 'Is there someone here?' 
+Then 'Is this person the same as an existing one?' 
+If new, create a new person_id and add an entry to "appearances" with the time window 
+(start_s integer seconds). If a person stops being present, then add an entry to "appearances" with the time window 
+(end_s integer seconds). If the person reappears later, add a new entry to "appearances", for the CORRECT person, 
+with the new time  (start_s). If you get to the end of the video and a person is still present, 
+add an entry to "appearances" with the time window (end_s) as the last second of the video.
+For each appearance start_s also give "box_2d": that person's 2D bounding box (normalized 0-1000,
+[y0,x0,y1,x1]). Box only, no mask.
 """
+
+
+MODEL = "gemini-3.5-flash"  # single source of truth: a cache is bound to the
+# model that created it, so a stray second model id here means either a 400
+# ("Model used by GenerateContent request ... and CachedContent ... has to be
+# the same") or a silent re-upload on every run.
 
 
 def _deterministic_config(cache_name):
@@ -59,6 +74,22 @@ def _deterministic_config(cache_name):
     the same answer instead of resampling a different (possibly incomplete)
     account each time."""
     return types.GenerateContentConfig(cached_content=cache_name, temperature=0)
+
+
+def _extend_cache(client, cache_name, ttl="600s"):
+    """Push the cache's expiry out after a query finishes. `ttl` is input-only and
+    is converted at creation into a fixed expireTime -- referencing the cache in a
+    generate_content call reads it but does not renew it, so on a long video the
+    queries outlive the cache and the later ones fail with a 403 "CachedContent
+    not found". Each call therefore buys the next one a fresh window.
+
+    Deliberately unguarded: a failure here means the cache is already gone or
+    unreachable, and stopping on that is clearer than printing a diagnostic that
+    scrolls past and letting the next query throw a 403 instead."""
+    client.caches.update(
+        name=cache_name,
+        config=types.UpdateCachedContentConfig(ttl=ttl),
+    )
 
 
 def _log_response_meta(response, label):
@@ -76,6 +107,65 @@ def _log_response_meta(response, label):
         print(f"[gemini-diag] {label}: failed to inspect response metadata: {e}")
 
 
+VIDEO_WINDOWS = 2  # how many clips to split the coverage-sensitive queries into.
+# Asked about a 33-minute video whole, Flash answers for roughly the first half and
+# stops with finish_reason=STOP -- it is not truncated, it believes it has finished.
+# Clipping the part it receives is the only way to make "the rest of the video" not
+# exist. Applies to the summary and transcript; objects/places/people still see the
+# whole video via the cache.
+
+
+def _mmss(seconds):
+    return f"{int(seconds) // 60:02d}:{int(seconds) % 60:02d}"
+
+
+def _window_bounds(duration_s, n):
+    step = duration_s / n
+    return [(i * step, min((i + 1) * step, duration_s)) for i in range(n)]
+
+
+def _windowed_query(client, file_ref, duration_s, prompt, label,
+                    n=VIDEO_WINDOWS, temperature=0, cache_name=None):
+    """Ask `prompt` of one clip at a time and join the answers.
+
+    A clipped part and cached content are mutually exclusive in one request, so
+    these calls reference the uploaded file directly and forgo the cache discount
+    -- each clip is 1/n of the video, so n of them costs about one uncached pass.
+
+    Timestamps are the thing to watch: the model's clock starts at the clip, so
+    each window is told which part of the full recording it is and asked for
+    whole-recording times. If the second window comes back numbered from 00:00,
+    that instruction was ignored and the times need shifting by start_s instead."""
+    out = []
+    for i, (start_s, end_s) in enumerate(_window_bounds(duration_s, n), start=1):
+        clip = types.Part(
+            file_data=types.FileData(file_uri=file_ref["uri"],
+                                     mime_type=file_ref["mime_type"]),
+            video_metadata=types.VideoMetadata(start_offset=f"{int(start_s)}s",
+                                               end_offset=f"{int(end_s)}s"),
+        )
+        framing = (
+            f"This clip is part {i} of {n} of a longer recording: it covers "
+            f"{_mmss(start_s)} to {_mmss(end_s)} of the full recording. Every "
+            f"timestamp you write must be a time in the FULL recording, so the "
+            f"first moment of this clip is {_mmss(start_s)}, not 00:00. Cover the "
+            f"clip all the way to its end.\n\n"
+        )
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=[clip, framing + prompt],
+            config=types.GenerateContentConfig(temperature=temperature),
+        )
+        print(response.text, flush=True)
+        _log_response_meta(response, f"{label} [{i}/{n}]")
+        # the windowed calls don't touch the cache, but they take minutes, and the
+        # cached queries later in the run still need it alive
+        if cache_name is not None:
+            _extend_cache(client, cache_name)
+        out.append(f"--- {_mmss(start_s)}-{_mmss(end_s)} ---\n{response.text or ''}")
+    return "\n\n".join(out)
+
+
 def gemini_vid_to_text(video_path, case_name, query_dir):
     """Get Gemini's summary/objects/transcript/places/people for a video. Reuses the
     remote cache from a previous call if it's still live (checked via
@@ -86,22 +176,50 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
     cache_name = None
     if cache_name_path.exists():
         try:
-            client.caches.get(name=cache_name_path.read_text().strip())
-            cache_name = cache_name_path.read_text().strip()
+            cached = client.caches.get(name=cache_name_path.read_text().strip())
+            # A cache belongs to the model that created it, and this file is
+            # shared with the other gemini modules -- reusing a cache another
+            # model built fails the whole run with a 400 on the first query, so
+            # treat a model mismatch exactly like an expired cache.
+            if (cached.model or "").split("/")[-1] != MODEL:
+                print(f"cache belongs to {cached.model}, not {MODEL} -- re-caching")
+                cache_name = None
+            else:
+                cache_name = cache_name_path.read_text().strip()
         except Exception:
             cache_name = None  # expired/gone -- fall through and re-cache below
 
-    if cache_name is None:
-        print("re_caching video")
-                # Upload + wait (once)
+    # The uploaded file is now kept as well as the cache: windowed queries need a
+    # file part they can clip, which a cache cannot give them. Uploads live 48h, so
+    # a same-day re-run reuses both. Cached-only runs used to discard this handle.
+    file_ref_path = query_dir / f"{case_name}_file.json"
+    file_ref = None
+    if file_ref_path.exists():
+        try:
+            ref = json.loads(file_ref_path.read_text())
+            client.files.get(name=ref["name"])  # 404s once the 48h window lapses
+            file_ref = ref
+        except Exception:
+            file_ref = None
+
+    if file_ref is None:
+        print("uploading video", flush=True)
         myfile = client.files.upload(file=video_path)
         while myfile.state.name != "ACTIVE":
             import time; time.sleep(5)
             myfile = client.files.get(name=myfile.name)
+        file_ref = {"name": myfile.name, "uri": myfile.uri, "mime_type": myfile.mime_type}
+        query_dir.mkdir(parents=True, exist_ok=True)
+        file_ref_path.write_text(json.dumps(file_ref, indent=2))
+    else:
+        myfile = client.files.get(name=file_ref["name"])
 
-        # Create the cache for 10 mins, just to get the queries done
+    if cache_name is None:
+        print("re_caching video")
+        # Create the cache for 10 mins, just to get the queries done -- every query
+        # extends it, so this only has to outlast one call at a time
         cache = client.caches.create(
-            model="gemini-3.5-flash",
+            model=MODEL,
             config=types.CreateCachedContentConfig(
                 contents=[myfile],
                 ttl="600s", #cache time
@@ -111,36 +229,56 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
         query_dir.mkdir(parents=True, exist_ok=True)
         cache_name_path.write_text(cache_name)#store path to cached video
 
+    duration_s = float(_probe_format(video_path)["duration"])
+    print(f"[gemini-diag] video duration {_mmss(duration_s)}, "
+          f"{VIDEO_WINDOWS} windows for summary/transcript", flush=True)
+
     # Query as many times as you like — no reprocessing
     FORMAT_SUFFIX = " Format the response as multiple short paragraphs separated by line breaks, not one continuous block of text."
 
-    response = client.models.generate_content(
-        model="gemini-3.5-flash",
-        contents="Give a detailed Summary of this video. provide start and end times. " + FORMAT_SUFFIX,
-        config=_deterministic_config(cache_name)
+    query_dir.mkdir(parents=True, exist_ok=True)
+
+    def _save(suffix, text):
+        """Write each answer the moment it lands. Holding all the writes to the end
+        of the function meant a single bad parse (the people JSON) threw away four
+        good queries that had already been paid for."""
+        out = query_dir / f"{case_name}_{suffix}"
+        out.write_text(text)
+        print(f"[gemini-diag] saved {out.name}", flush=True)
+
+    summary_text = _windowed_query(
+        client, file_ref, duration_s,
+        #prompt="Give a detailed Summary of this clip. provide start and end times. "
+        #       "Intervals can be no coarser than 1 minute." + FORMAT_SUFFIX,
+        prompt="Give a detailed Summary of this clip "
+                      "Intervals can be no coarser than 10 seconds. provide start and end times each time" + FORMAT_SUFFIX,
+                
+        label="summary",
+        cache_name=cache_name,
     )
-    print(response.text)
-    _log_response_meta(response, "summary")
+    _save("description.txt", summary_text)
 
     response2 = client.models.generate_content(
         model="gemini-3.5-flash",
-        contents=f"summary of the video:{response.text} \n\nQuestion:What objects, pertinent to the summary are visible and when? Provide times. don't subdivide the same object into multiple times unless there is a long gap" + FORMAT_SUFFIX,
+        contents=f"summary of the video:{summary_text} \n\nQuestion:What objects, pertinent to the summary are visible and when? Provide times. don't subdivide the same object into multiple times unless there is a long gap" + FORMAT_SUFFIX,
         config=_deterministic_config(cache_name)
     )
-    print(response2.text)
+    print(response2.text, flush=True)
     _log_response_meta(response2, "objects")
+    _extend_cache(client, cache_name)
+    _save("objects.txt", response2.text)
 
 
-    response3 = client.models.generate_content(
-        model="gemini-3.5-flash",
-        contents= F"Give a full human voice audio transcript of this video."
-        f" make sure you report exactly what the person says, vocalisations should be described e.g, animals noises shoule be miaow, or woof"
-        f"**MM:SS** [Speaker]: transcript\n\n"
-        f" if the same person is talking and there is less than 2s pause, this is one entry not 2",
-        config=_deterministic_config(cache_name)
+    transcript_text = _windowed_query(
+        client, file_ref, duration_s,
+        prompt="IF there is audio, Give a full human voice audio transcript of this clip."
+               " make sure you report exactly what the person says, vocalisations should be described e.g, animals noises shoule be miaow, or woof"
+               "**MM:SS** [Speaker]: transcript\n\n"
+               " if the same person is talking and there is less than 2s pause, this is one entry not 2",
+        label="transcript",
+        cache_name=cache_name,
     )
-    print(response3.text)
-    _log_response_meta(response3, "transcript")
+    _save("transcript_full.txt", transcript_text)
 
     places = client.models.generate_content(
             model="gemini-3.5-flash",
@@ -150,8 +288,10 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
             ,
             config=_deterministic_config(cache_name)
         )
-    print(places.text)
+    print(places.text, flush=True)
     _log_response_meta(places, "places")
+    _extend_cache(client, cache_name)
+    _save("places.txt", places.text)
 
     # --- people + per-appearance box_2d, from the same cached video ---
     people_response = client.models.generate_content(
@@ -159,8 +299,14 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
         contents="Identify every distinct person visible in this video." + PEOPLE_SUFFIX,
         config=_deterministic_config(cache_name),
     )
-    print(people_response.text)
+    print(people_response.text, flush=True)
     _log_response_meta(people_response, "people")
+    # saved before the parse, so a response that won't parse is still on disk to
+    # look at instead of being lost with the traceback
+    _save("people_raw.txt", people_response.text or "")
+    # last query of the run, but still worth extending -- it leaves the cache with
+    # a fresh window for an immediate re-run, which is the common case in a notebook
+    _extend_cache(client, cache_name)
     people_raw = people_response.text
     _, _, people_machine_block = people_raw.partition("<machine>")
     people_json_str = people_machine_block.partition("</machine>")[0].strip()
@@ -190,15 +336,14 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
         draw_point_overlay([{"box_2d": box, "label": person_id}], frame,
                             masks_dir / f"{person_id}_a{a_idx}_f{frame_idx:05d}.png")
 
-     # --- SAVE (run once after getting response3) ---
-    query_dir.mkdir(parents=True, exist_ok=True)
-    (query_dir / f"{case_name}_description.txt").write_text(response.text)
-    (query_dir / f"{case_name}_objects.txt").write_text(response2.text)
-    (query_dir / f"{case_name}_transcript_full.txt").write_text(response3.text)
-    (query_dir / f"{case_name}_places.txt").write_text(places.text)
-    (query_dir / f"{case_name}_people.json").write_text(json.dumps(people, indent=2))
+    # --- SAVE ---
+    # the four text answers are already on disk -- each was written by _save the
+    # moment its query returned. Only the parsed people JSON is left, and it waits
+    # until here because the debug overlays above can still reveal a bad box.
+    _save("people.json", json.dumps(people, indent=2))
     return
 
+#---DEAD---CODE-----WAS A FAILED TRACKING ATTEMPT
 def query_from_description(operator_prompt, description_path, objects_path, case_dir):
     description = Path(description_path).read_text()
     objects = Path(objects_path).read_text()

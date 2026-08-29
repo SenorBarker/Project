@@ -33,6 +33,12 @@ for _p in _ON_PATH:
 
 _CASE_NAME = None
 _EXPERIMENT = None
+# Guarded, not a plain assignment: %autoreload 2 re-execs this module in place
+# whenever the file's mtime changes, so a bare `_PASS = 1` here would silently
+# stomp set_pass()'s value back to 1 on the next reload after an edit -- this
+# only seeds it the first time the module namespace has no _PASS yet.
+if "_PASS" not in globals():
+    _PASS = 1
 
 
 def set_case(case_name, experiment=None):
@@ -42,13 +48,22 @@ def set_case(case_name, experiment=None):
 
 def case_name(): return _CASE_NAME
 
+def set_pass(n):
+    """Bump this in the notebook each time you hand the Producer feedback.
+    Every paper-edit/draft file written after that gets '-{n}' on its name,
+    so passes accumulate on disk instead of overwriting each other."""
+    global _PASS
+    _PASS = n
+
+def pass_num(): return _PASS
+
 def case_dir():
     assert _CASE_NAME is not None, "call set_case(case_name, experiment) first"
     return Path(REPO_ROOT) / "Data" / _CASE_NAME
 
 
 def assets_dir():
-    return case_dir() / "090_assets"
+    return _with_experiment(case_dir() / "090_assets")
 
 
 def asset_name():
@@ -116,6 +131,11 @@ def length_units(): return "m" if has_gps_data() else "model units"
 
 FRAME_NAME_FMT = "{:04d}.jpg"
 MASK_NAME_FMT  = "{:04d}.png"   # also copy-pasted in P_projection_mapping, A_YOLO_seg, A_ROBOFLOW_SAM3, W_video_editor
+
+# Seconds tracked either side of a real beat's search window, so SAM3 has room to
+# catch the subject entering/leaving rather than starting mid-presence. Nothing to
+# do with cut handles -- it buys an onset to cut against, it doesn't place the cut.
+MASK_SEARCH_HANDLE_S = 2.5
 
 
 def to_report_path(path):

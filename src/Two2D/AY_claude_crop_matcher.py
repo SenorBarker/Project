@@ -45,11 +45,10 @@ def descriptor_targets(paper_edit_json_path,descriptor_targets=None):
     objection to letting MAP beats in at all (a recon-scale window would let a
     track from anywhere in the clip answer for a person seen in one 6s beat).
     """
-    from render_paper_edit import tracking_windows
+    from render_paper_edit import tracking_windows, paper_edit_path
 
     if paper_edit_json_path is None:
-        import A_Config
-        paper_edit_json_path = A_Config.agent_p_output_dir() / f"{A_Config.case_name()}_paper_edit_draft.json"
+        paper_edit_json_path = paper_edit_path("draft")
 
     paper_edit = json.loads(Path(paper_edit_json_path).read_text(encoding="utf-8"))
 

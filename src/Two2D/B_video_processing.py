@@ -372,15 +372,22 @@ def video_start_time(video_path):
 
 def video_fps(video_path):
     '''INPUT  : path to a video file
-       OUTPUT : float -- frames per second, read from the video stream's r_frame_rate
-                (ffprobe reports this as a "num/den" fraction, e.g. "30000/1001").'''
+       OUTPUT : float -- frames per second, read from the video stream's avg_frame_rate
+                (ffprobe reports this as a "num/den" fraction, e.g. "30000/1001"). Must
+                agree with what cv2's CAP_PROP_FPS reports (used internally by
+                image_sequencer), or a caller converting a frame-domain stride to
+                interval_sec and back gets a different interval_frames than intended.
+                r_frame_rate is the container's declared/nominal rate and does NOT match
+                on VFR sources -- e.g. a phone recording that opens at 30fps and drops to
+                ~26fps later still reports r_frame_rate=30, while avg_frame_rate reflects
+                the true nb_frames/duration average cv2 also uses.'''
     probe = subprocess.run(
         ["ffprobe", "-v", "quiet", "-print_format", "json",
-         "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate", str(video_path)],
+         "-select_streams", "v:0", "-show_entries", "stream=avg_frame_rate", str(video_path)],
         capture_output=True, text=True, check=True,
     )
-    r_frame_rate = json.loads(probe.stdout)["streams"][0]["r_frame_rate"]
-    num, den = r_frame_rate.split("/")
+    avg_frame_rate = json.loads(probe.stdout)["streams"][0]["avg_frame_rate"]
+    num, den = avg_frame_rate.split("/")
     return float(num) / float(den)
 
 
@@ -405,6 +412,29 @@ def frames_at_indices(video_path, frame_indices):
     return frames
 
 
+def frame_times_at_indices(video_path, frame_indices):
+    '''INPUT  : path to a video file, iterable of frame indices
+       OUTPUT : dict {frame_idx: seconds} -- each requested frame's own decoded
+                timestamp (CAP_PROP_POS_MSEC / 1000), from a single sequential
+                cap.grab()-only pass (no pixel decode) -- the reverse of
+                frame_indices_at_times: given real frame numbers, not target
+                times. A frame_idx past the end of the video is simply absent
+                from the returned dict. Same counting-pass shape as
+                frames_at_indices, but records a timestamp instead of pixels.'''
+    wanted = set(frame_indices)
+    cap = cv2.VideoCapture(str(video_path))
+    times, idx = {}, -1
+    while wanted:
+        if not cap.grab():
+            break
+        idx += 1
+        if idx in wanted:
+            times[idx] = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+            wanted.discard(idx)
+    cap.release()
+    return times
+
+
 def seek_exact(cap, frame_idx):
     '''INPUT  : an open VideoCapture, the frame index wanted
        OUTPUT : bool -- cap left so the NEXT read() returns exactly frame_idx.
@@ -417,12 +447,19 @@ def seek_exact(cap, frame_idx):
     return True
 
 
-def frame_indices_at_times(video_path, target_times_s):
+def frame_indices_at_times(video_path, target_times_s, mode="nearest"):
     '''INPUT  : path to a video file, list of target times in seconds (e.g. one
-                per GPS fix).
-       OUTPUT : list[int | None] -- frame index (same order as target_times_s)
-                whose own decoded timestamp (CAP_PROP_POS_MSEC) is nearest that
-                target. None only if the video has no frames.
+                per GPS fix); mode -- "nearest" (default), "floor", or "ceil".
+       OUTPUT : list[int | None] -- frame index (same order as target_times_s).
+                "nearest": whichever real frame's own decoded timestamp
+                (CAP_PROP_POS_MSEC) is closest to the target. "floor": the
+                latest real frame at or before the target -- never rounds
+                forward past it (e.g. a detected speech onset: the returned
+                frame must never fall inside the speech). "ceil": the earliest
+                real frame at or after the target -- never rounds backward
+                past it. Both floor and ceil clamp to frame 0 / the last frame
+                when the target falls outside the video's real timestamps,
+                same as nearest. None only if the video has no frames.
                 Same single sequential pass as frames_at_times (VFR-safe, no
                 cap.set(POS_FRAMES, N) mid-stream), but for callers that only
                 need indices, not pixels: cap.grab() instead of cap.read()
@@ -432,6 +469,7 @@ def frame_indices_at_times(video_path, target_times_s):
                 every target -- O(frames + targets) and no frame.copy(), vs.
                 frames_at_times' O(frames * targets) with a copy on every
                 improving match.'''
+    assert mode in ("nearest", "floor", "ceil"), f"unknown mode: {mode}"
     order = sorted(range(len(target_times_s)), key=lambda i: target_times_s[i])
     sorted_targets = [target_times_s[i] for i in order]
     result_sorted = [None] * len(sorted_targets)
@@ -447,7 +485,14 @@ def frame_indices_at_times(video_path, target_times_s):
         t_s = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
 
         while ti < len(sorted_targets) and sorted_targets[ti] <= t_s:
-            if prev_t is not None and abs(prev_t - sorted_targets[ti]) < abs(t_s - sorted_targets[ti]):
+            if mode == "floor":
+                # prev_idx is None only when the target falls before the very
+                # first frame -- clamp to frame 0 (frame_idx) rather than
+                # rounding forward past it.
+                result_sorted[ti] = prev_idx if prev_idx is not None else frame_idx
+            elif mode == "ceil":
+                result_sorted[ti] = frame_idx
+            elif prev_t is not None and abs(prev_t - sorted_targets[ti]) < abs(t_s - sorted_targets[ti]):
                 result_sorted[ti] = prev_idx
             else:
                 result_sorted[ti] = frame_idx
@@ -502,6 +547,10 @@ def frames_at_times(video_path, target_times_s):
 if __name__ == "__main__":
     main()
 
+def video_duration_sec(video_path):
+    '''INPUT  : path to a video file
+       OUTPUT : float -- container duration in seconds, from ffprobe's format=duration.'''
+    return float(_probe_format(video_path)["duration"])
 
 
 #--------------frames won't be contigous, this lists them in order 

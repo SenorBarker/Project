@@ -27,15 +27,24 @@ from P_projection_mapping import reproject, DEVICE
 from Rendering.R_map_animator import interp_pos, hex_to_rgb
 
 
-def _time_smoothed(frames, positions, fps, window_sec):
+def _time_smoothed(frames, positions, video_path, window_sec, frame_times=None):
     """Centered running average of positions over a window_sec-wide real-time
-    window, using each frame's own frame_number/fps timestamp rather than a
+    window, using each frame's own real decoded timestamp rather than a
     fixed sample count -- stays correct across irregular gaps (missing/
     redacted frames don't skew the window width the way a fixed N-sample
-    window would). window_sec<=0 returns positions unchanged."""
+    window would). window_sec<=0 returns positions unchanged.
+
+    Uses real per-frame timestamps, not frame_number/fps -- a single fps
+    misrepresents the true local instantaneous rate on VFR sources, which
+    would make the "real-time" window an actually-wrong width. frame_times,
+    if given, is a batched lookup the caller already made across every
+    subject; otherwise resolve it here for a standalone call."""
     if window_sec <= 0:
         return positions
-    t = np.asarray(frames, dtype=float) / fps
+    if frame_times is None:
+        from Two2D.B_video_processing import frame_times_at_indices
+        frame_times = frame_times_at_indices(video_path, frames)
+    t = np.array([frame_times[f] for f in frames], dtype=float)
     positions = np.asarray(positions, dtype=float)
     half = window_sec / 2
     out = np.empty_like(positions)
@@ -58,6 +67,7 @@ def BEV_trace_overlay(
     supersample=2,
     fps=25, smooth_window_sec=1.0,
     beat=None,
+    video_path=None,
 ):
     """n_frames/fps come from the MAP beat and source video; the passed
     values are only the fallback when there's no MAP beat.
@@ -81,17 +91,20 @@ def BEV_trace_overlay(
     _beat_key = beat["beat_id"][0] if beat else None
     _suffix   = f"_{_beat_key}" if _beat_key else ""
 
+    from A_Config import case_dir
+    if video_path is None:
+        video_path = next((case_dir() / "010_source").glob("*.mp4"))
+
     try:
-        from A_Config import agent_p_output_dir, case_name, case_dir
         from Two2D.B_video_processing import video_fps
+        from render_paper_edit import paper_edit_path
         import json
         bev_beat = beat
         if bev_beat is None:
-            paper_edit = json.loads(
-                (agent_p_output_dir() / f"{case_name()}_paper_edit.json").read_text(encoding="utf-8"))
+            paper_edit = json.loads(paper_edit_path("revision").read_text(encoding="utf-8"))
             bev_beat = next(b for b in paper_edit["beats"]
                             if b["archetype"] == "MAP" and "BEV_MAP" in (b.get("requested_flags") or []))
-        fps = video_fps(next((case_dir() / "010_source").glob("*.mp4")))
+        fps = video_fps(video_path)
         n_frames = bev_beat["duration_seconds"] * fps
     except (FileNotFoundError, StopIteration, KeyError):
         pass  # no paper edit / no BEV_MAP beat -- keep the caller's n_frames, fps
@@ -155,17 +168,33 @@ def BEV_trace_overlay(
         if not is_multi:
             colors = [subject_trail_color]
 
-        for i, (name, positions) in enumerate(subjects.items()):
+        # Pass 1: resolve each subject's frame list (cheap, in-memory) before
+        # touching the video.
+        sub_frames_by_name = {}
+        for name, positions in subjects.items():
             sub_frames = sorted(fn for fn in extra_indices if fn in positions)
             # drop NaN/inf positions here -- reproject()/interp_pos() have no NaN guard,
             # so a bad point silently spreads into every frame whose t_frac interpolates
             # across it (see P_trace_overlayer teleport investigation)
-            sub_frames = [fn for fn in sub_frames if np.isfinite(np.asarray(positions[fn])).all()]
-            if len(sub_frames) < 2:
-                print(f"Skipping subject trace '{name}' -- only {len(sub_frames)} frame(s) overlap extra_indices.")
+            sub_frames_by_name[name] = [fn for fn in sub_frames if np.isfinite(np.asarray(positions[fn])).all()]
+
+        # One batched real-timestamp lookup across every subject's frames,
+        # instead of a separate full-video pass per subject.
+        from Two2D.B_video_processing import frame_times_at_indices
+        all_sub_frames = sorted({fn for frames in sub_frames_by_name.values() for fn in frames})
+        frame_times = (frame_times_at_indices(video_path, all_sub_frames)
+                       if all_sub_frames and smooth_window_sec > 0 else {})
+
+        for i, (name, positions) in enumerate(subjects.items()):
+            sub_frames = sub_frames_by_name[name]
+            if not sub_frames:
+                print(f"Skipping subject trace '{name}' -- no frames overlap extra_indices.")
                 continue
+            # A subject seen for a single frame still gets drawn -- as a static dot held
+            # for the whole clip (via the raw_fracs padding below), not silently dropped.
             sub_pos_raw = np.stack([positions[fn] for fn in sub_frames])
-            sub_pos_smoothed = _time_smoothed(sub_frames, sub_pos_raw, fps, smooth_window_sec)
+            sub_pos_smoothed = _time_smoothed(sub_frames, sub_pos_raw, video_path, smooth_window_sec,
+                                               frame_times=frame_times)
             sub_pos = torch.as_tensor(sub_pos_smoothed, dtype=torch.float32, device=DEVICE)
 
             us, vs, _, _ = reproject(sub_pos, None, new_view, ortho_params=ortho_params)
@@ -177,26 +206,31 @@ def BEV_trace_overlay(
 
     # -- shared time axis: frame number is time-proportional for evenly-sampled video,
     # same hold-before-start/hold-after-end padding as R_map_animator.py:365-374 --
-    t0_global = min(tr["frames"][0] for tr in traces)
+    t0_global = min(tr["frames"][0] for tr in traces)#start frame index.
     t1_global = max(tr["frames"][-1] for tr in traces)
     if t1_global == t0_global:
         raise ValueError("All camera/subject frame numbers are identical -- cannot animate.")
 
+    #for each trace in the trace collection:
     for tr in traces:
-        raw_fracs = [(fn - t0_global) / (t1_global - t0_global) for fn in tr["frames"]]
+        #fn = frame number, this is just time 
+        raw_fracs = [(fn - t0_global) / (t1_global - t0_global) for fn in tr["frames"]] 
         time_fracs = raw_fracs[:]
-        interp_pts = tr["px_points"][:]
-        heading_pts = tr["heading_pts"][:] if tr["heading_pts"] is not None else None
-        if raw_fracs[0] > 0:
-            time_fracs = [0.0] + time_fracs
-            interp_pts = [tr["px_points"][0]] + interp_pts
-            if heading_pts is not None:
-                heading_pts = [tr["heading_pts"][0]] + heading_pts
-        if raw_fracs[-1] < 1:
-            time_fracs = time_fracs + [1.0]
-            interp_pts = interp_pts + [tr["px_points"][-1]]
-            if heading_pts is not None:
-                heading_pts = heading_pts + [tr["heading_pts"][-1]]
+        interp_pts = tr["px_points"][:] # all points for 1 thing
+        heading_pts = tr["heading_pts"][:] if tr["heading_pts"] is not None else None # cam angle frustrum
+
+        #holds dots on map until things happen - looks good in hide n seek, terrible inn the coppa
+        #start and end padding commented out as a test
+        #if raw_fracs[0] > 0:
+        #    time_fracs = [0.0] + time_fracs #concatennate 
+        #    interp_pts = [tr["px_points"][0]] + interp_pts #concatenate first moment extra points
+        #    if heading_pts is not None:
+        #        heading_pts = [tr["heading_pts"][0]] + heading_pts
+        #if raw_fracs[-1] < 1:
+        #    time_fracs = time_fracs + [1.0]
+        #    interp_pts = interp_pts + [tr["px_points"][-1]]
+        #    if heading_pts is not None:
+        #        heading_pts = heading_pts + [tr["heading_pts"][-1]]
         tr["time_fracs"] = time_fracs
         tr["interp_pts"] = interp_pts
         tr["heading_pts"] = heading_pts
@@ -216,18 +250,22 @@ def BEV_trace_overlay(
     frames_dir = assets_dir() / f"bev_trace_frames{_suffix}"
     frames_dir.mkdir(parents=True, exist_ok=True)
 
-    for fi in range(n_frames):
+    for fi in range(n_frames):#frame i - we are in a time loop
         t_frac = fi / (n_frames - 1)
         frame = base.copy()
         overlay = Image.new("RGBA", frame.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
 
         for tr in traces:
+            if t_frac < tr["time_fracs"][0] or t_frac > tr["time_fracs"][-1]:
+                continue
+
             rgb = hex_to_rgb(tr["trail_color"])
             t_alpha = int(trail_opacity * 255)
             d_alpha = int(dot_opacity * 255)
             tw = max(1, int(_trail_width * S))
             dr = max(1, int(_dot_radius * S))
+        
 
             trail_pts = []
             for i, tf in enumerate(tr["time_fracs"]):

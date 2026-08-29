@@ -309,17 +309,21 @@ def _dispatch_sam3_tracking(*args, **kwargs):
         try:
             # How the rest of src/ imports this package (see D_2d_analysis,
             # Two2D/W_video_editor); the notebook only puts src/ on sys.path.
-            from run_models.A_LOCAL_SAM3 import _run_sam3_tracking_local
+            from run_models.A_LOCAL_SAM3 import _run_sam3_tracking_local, release_predictor
         except ModuleNotFoundError:
             # How the spike scripts import it, running from inside run_models/.
-            from A_LOCAL_SAM3 import _run_sam3_tracking_local
-        return _run_sam3_tracking_local(*args, **kwargs)
+            from A_LOCAL_SAM3 import _run_sam3_tracking_local, release_predictor
+        try:
+            return _run_sam3_tracking_local(*args, **kwargs)
+        finally:
+            # Also on the failure path -- an OOM mid-track otherwise leaves the model
+            # on the card and the re-run OOMs sooner. release_predictor is idempotent.
+            release_predictor()
     return _run_sam3_tracking(*args, **kwargs)
 
 
 def track_subject_sam3(video_path,paper_edit_json_path, threshold=0.5,
                         requested_region="us", requested_plan="webrtc-gpu-large"):
-    import json
     import sys
     from collections import defaultdict
     from A_Config import REPO_ROOT, case_name, agent_p_output_dir
@@ -331,17 +335,7 @@ def track_subject_sam3(video_path,paper_edit_json_path, threshold=0.5,
 
     #paper_edit_json_path = agent_p_output_dir() / f"{case_name()}_paper_edit_draft.json"
 
-    flags_path = paper_edit_json_path.with_name(
-        paper_edit_json_path.stem.replace("_paper_edit", "") + "_flags.json"
-    )
-    current_flags = json.loads(flags_path.read_text(encoding="utf-8"))
-    
-
-    cap = cv2.VideoCapture(str(video_path))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    cap.release()
-    
-    tracking_requests = build_tracking_requests(paper_edit_json_path, fps)
+    tracking_requests = build_tracking_requests(paper_edit_json_path, video_path=video_path)
 
     if not tracking_requests:
         print("Nothing left to track")
@@ -366,15 +360,18 @@ def run_sam3_manual(video_path, subject, start_frame=None, end_frame=None,
     masks/report/return shape are identical.
     """
     cap = cv2.VideoCapture(str(video_path))
-    fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     cap.release()
 
     start_frame = 0 if start_frame is None else start_frame
     end_frame = total_frames - 1 if end_frame is None else end_frame
 
-    start_s = start_frame / fps
-    end_s = (end_frame + 1) / fps  # end_frame is inclusive; make_span_clip's end_s is not
+    # Real per-frame timestamps, not frame/fps -- this file's own
+    # frame_index_at_time docstring documents up to 8 frames of measured
+    # error from fps arithmetic on VFR phone footage.
+    pts = frame_pts_times(video_path)
+    start_s = pts[start_frame]
+    end_s = pts[end_frame + 1] if end_frame + 1 < len(pts) else pts[-1]  # end_frame is inclusive; make_span_clip's end_s is not
 
     tracking_requests_by_subject = {subject: [{"subject": subject, "start_s": start_s, "end_s": end_s}]}
 

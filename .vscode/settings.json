@@ -1,3 +1,16 @@
 {
-    "git.ignoreLimitWarning": true
+    "git.ignoreLimitWarning": true,
+    "notebook.output.wordWrap": true,
+    // Mirrors A_Config._ON_PATH -- A_Config puts these on sys.path at import time,
+    // which Pylance can't see, so bare imports like `import render_paper_edit`
+    // resolve at runtime but show as unresolved in the editor without this.
+    "python.analysis.extraPaths": [
+        "./src",
+        "./src/claude_agent",
+        "./src/Two2D",
+        "./src/Thr3D",
+        "./src/Rendering",
+        "./src/run_models",
+        "./src/Experiments/templates"
+    ]
 }

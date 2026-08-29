@@ -372,6 +372,7 @@ def run_density_sweep(case_name, experiment, video_path, start_3D_recon, end_3D_
 
         recon_dur = end_3D_recon - start_3D_recon
         stride_frames = (recon_dur + cam_poses - 1) // cam_poses  # ceil division
+        print("stride" , stride_frames)
         interval_sec = stride_frames / fps
 
         frames_dir = frames_for_cam_poses_dir()

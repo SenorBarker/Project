@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 import torch
 from ultralytics import YOLO
-from Two2D.B_video_processing import seek_exact
+from Two2D.B_video_processing import seek_exact, frame_indices_at_times
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -185,17 +185,21 @@ def track_subject_masks_from_hints(
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open video: {video_path}")
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps          = cap.get(cv2.CAP_PROP_FPS)
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 
+    # One batched real-timestamp->frame lookup for every detection's
+    # start_s/end_s, instead of seconds*fps per detection -- inaccurate on
+    # VFR sources.
+    flat_targets = [v for det in detections for v in (det["start_s"], det["end_s"])]
+    flat_frames = frame_indices_at_times(video_path, flat_targets) if flat_targets else []
+
     all_results = []
     subject_start, subject_end = None, None
-    for det in detections: # this does separate detections each time
+    for i, det in enumerate(detections): # this does separate detections each time
         subject = det["subject"].lower().removeprefix("the ").removeprefix("a ").removeprefix("an ").strip()
         subject_ids = _get_subject_ids(model, [subject])
-        hint_start = int(det["start_s"] * fps)
-        hint_end   = int(det["end_s"]   * fps)
+        hint_start, hint_end = flat_frames[2 * i], flat_frames[2 * i + 1]
 
         subject_start, subject_end = _expand_bounds(
             model, cap, total_frames, subject_ids, h, w,

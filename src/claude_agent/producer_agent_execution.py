@@ -14,7 +14,7 @@ from claude_agent_sdk import (
     ThinkingConfigEnabled,
     ToolUseBlock,
 )
-from A_Config import REPO_ROOT, case_name, query_dir, agent_p_output_dir, to_repo_path
+from A_Config import REPO_ROOT, case_name, query_dir, agent_p_output_dir, to_repo_path, pass_num
 PROJECT_ROOT = REPO_ROOT
 # cwd must be the repo root (where .claude/ lives) -- Claude Code resolves
 # every relative tool path against the project root it finds by walking up
@@ -157,23 +157,31 @@ def run_producer_agent(task_prompt: str, mode: str = "revision"):
 
     out_dir = agent_p_output_dir()
     print(out_dir)
-    # Producer writes ONE file — the paper-edit JSON. Everything downstream
+    # Producer writes ONE file — the paper-edit JSON, under producer.md's own
+    # fixed name (it has no notion of pass numbers). Everything downstream
     # (flags dict, HTML) is derived from it deterministically, no model involved,
     # and lives in the next cell so it can be re-run on its own (e.g. after
     # editing render_paper_edit.py) without paying for another agent call.
-    # producer.md only knows MODE: draft / MODE: revision -- a "draft2"
-    # prompt is still MODE: draft to the model, so it writes the same
-    # _paper_edit_draft.json filename as the first pass. Rename it here so
-    # it doesn't collide with (or overwrite) the first draft on disk.
+    # producer.md always writes the same base filename regardless of how many
+    # times we've called it, so rename here to this pipeline's real naming
+    # scheme -- "<asset_name>_<pass>_<draft|revision>.json" (see
+    # render_paper_edit.paper_edit_path, the one place that stem is defined)
+    # -- using the pass bumped in the notebook each time feedback is given,
+    # so passes accumulate on disk instead of colliding.
+    from render_paper_edit import paper_edit_path
     output_filename_suffix = "_paper_edit_draft.json" if mode in ("draft", "draft2") else "_paper_edit.json"
     paper_edit_json_path = next(out_dir.glob(f"*{output_filename_suffix}"))
 
-    if mode == "draft2":
-        draft2_path = paper_edit_json_path.with_name(paper_edit_json_path.stem + "_2" + paper_edit_json_path.suffix)
-        paper_edit_json_path = paper_edit_json_path.rename(draft2_path)
+    dated_path = paper_edit_path(mode)
+    if dated_path.exists():
+        raise FileExistsError(
+            f"{dated_path} already exists -- bump A_Config.set_pass(...) before "
+            f"calling run_producer_agent again, or you'll overwrite this pass."
+        )
+    paper_edit_json_path = paper_edit_json_path.rename(dated_path)
 
     print(f"\npaper_edit_json_path = {paper_edit_json_path}")
-    
+
     return paper_edit_json_path
 
 def build_producer_prompt_draft1(brief: str, analysis_2d_for_decisions: dict, producer_flags: dict) -> str:
@@ -201,7 +209,7 @@ def build_producer_prompt_draft1(brief: str, analysis_2d_for_decisions: dict, pr
             2D ANALYSIS — deterministic measurement, treat as fact:
             {analysis_2d_for_decisions}
 
-            AVAILABLE FLAGS (things you may request by setting True — do not touch anything not listed):
+            PRODUCER FLAGS (things you may request by setting True — do not touch anything not listed):
             {producer_flags}
 
             Produce the paper edit per your instructions.
@@ -214,8 +222,12 @@ def build_producer_prompt_draft2(brief: str, analysis_2d_for_decisions: dict, pr
     places_text  =   (query_dir() / f"{case_name()}_places.txt").read_text(encoding="utf-8")
     people_text  =   (query_dir() / f"{case_name()}_people.json").read_text(encoding="utf-8")
     source_text = f"DESCRIPTION\n{description_text}\nOBJECTS\n{objects_text}\nAUDIO TRANSCRIPT\n{transcript_text}\nPLACES{places_text}\nPEOPLE\n{people_text}"
-    previous_paper_edit_text = (agent_p_output_dir() / f"{case_name()}_paper_edit.json").read_text(encoding="utf-8")
-    #assistant_feedback  =  (agent_p_output_dir() / f"{case_name()}_draft_ast_fb.json").read_text(encoding="utf-8")
+    # "your draft" is the Producer's own prior draft output -- the one the
+    # notebook is now giving feedback on. By the time this is called, the
+    # notebook has already bumped pass_num() for the draft2 write about to
+    # happen, so that prior draft sits one pass back.
+    from render_paper_edit import paper_edit_path
+    previous_paper_edit_text = paper_edit_path("draft", pass_n=pass_num() - 1).read_text(encoding="utf-8")
     return f"""
             MODE: draft
 
@@ -235,7 +247,7 @@ def build_producer_prompt_draft2(brief: str, analysis_2d_for_decisions: dict, pr
             2D ANALYSIS — deterministic measurement, treat as fact:
             {analysis_2d_for_decisions}
 
-            AVAILABLE FLAGS (things you may request by setting True — do not touch anything not listed):
+            PRODUCER FLAGS (things you may request by setting True — do not touch anything not listed):
             {producer_flags}
 
             Produce the paper edit per your instructions.
@@ -266,7 +278,7 @@ def build_producer_prompt_revision(brief: str, analysis_2d_for_decisions: dict, 
             2D ANALYSIS deterministic measurement, treat as fact:
             {analysis_2d_for_decisions}
 
-            AVAILABLE FLAGS (things you may request by setting True — do not touch anything not listed):
+            PRODUCER FLAGS (things you may request by setting True — do not touch anything not listed):
             {producer_flags}
 
             DRAFT PAPER EDIT (your own informed-pass output, now resolved by the deterministic auto_select step and the Assistant's feasibility verdicts — revise per your instructions):

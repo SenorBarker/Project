@@ -37,8 +37,8 @@ def gemini_final_report():
     transcript =  gemini_query_CSV_cached(transcript_prompt, asset_name, assets_dir())
 
     #save and add to report
-    (assets_dir() / f"{asset_name}_event_description.txt").write_text(event_description)
-    (assets_dir() / f"{asset_name}_transcript.txt").write_text(transcript)
+    (assets_dir() / f"{asset_name()}_event_description.txt").write_text(event_description)
+    (assets_dir() / f"{asset_name()}_transcript.txt").write_text(transcript)
     event_descrption_path = assets_dir() / f"{asset_name()}_event_description.txt"
     transcript_path       = assets_dir() / f"{asset_name()}_transcript.txt"
     from C_CSV_report import add_to_report

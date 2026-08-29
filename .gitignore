@@ -36,6 +36,9 @@ EGO_EXO/
 realityscan/
 realityscan2/
 transfer_artifacts/
+
+# Thesis writing -- separate git repo, synced with Overleaf
+writing/
 EOF
 
 eof

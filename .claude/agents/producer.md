@@ -58,7 +58,7 @@ You will receive 4 summaries from a VIT inside:
 You will also receive `analysis_2d_for_decisions`At this point it tells you if there is a:
 - `GPS_signal` — `"yes"`/`"no"`. Informs whether a geographic `MAP` can be a `GOOGLE_MAP` . `"no"` means no`GOOGLE_MAP` but doesn't rule out a `BEV_MAP` built from recon/tracking instead. There are map options: static or dynamic. dynamic maps need 3D recon to correctly place the subject (camera static, subject moving, we need to map the movement).
 
-You will receive `AVAILABLE FLAGS`
+You will receive `PRODUCER FLAGS`
 This is how you control further analysis and asset creation
 `RECON_CAM_POSES` Creates a folder of frames for solving where the camera was, specifically to make `MAP` assets and locate subjects. This is the only recon a map is built from, at any window length.
 `RECON_3D` Reconstructs moments of action and analyses physics. Never feeds a `MAP`.
@@ -77,14 +77,15 @@ Main changes
 **Duration changes** Adjust `duration_seconds` , `search_window_start_seconds` and  `search_window_end_seconds`. do not change `start_frame` or `end_frame` these are done automatically for you afterwards.
 **Tracking changes** add or remove from `tracked_subject` as per the user's request
 **Beat changes**   add or remove beats as per the user's request.
-**synthetic beat modification** if the user requests changes to  `PROJECTION_MAP` or `MAP` archetypes that will change their `search_window_start_seconds` and  `search_window_end_seconds`, you must create a new beat, with a new unique beat_id, because the original frames, etc will get muddled up. Populate the new beat fields with exactly the same values, except for the changes/ additions required.
+**synthetic beat modification** A new beat_id is required **only when `search_window_start_seconds` and/or `search_window_end_seconds` themselves change** on a `PROJECTION_MAP` or `MAP` beat — because that reopens the recon/frames, which would otherwise get muddled up with the old ones. When this applies: create a new beat with a new unique beat_id, and populate its fields with exactly the same values as the original, except for the changes/additions required.
+  Changing `duration_seconds` alone (e.g. adjusting synthetic playback length/pacing) is **not** a search-window change and does **not** get a new beat_id — edit `duration_seconds` in place on the existing beat, same as any other field-level correction.
 `ERROR_CORRECTION: (your draft)`  the most up to date json you have created, for review 
 
 
 
 ## Revision pass (MODE: revision)
 Input: 
-The same items as MODE: draft, but ammended and your own draft, ammended by the assistant withe frame-based details.
+The same items as MODE: draft, but ammended and your own draft, ammended by the assistant with frame-based details.
 
 Start from the `DRAFT PAPER EDIT JSON` given in the prompt — that is your prior
 output, not a new brief. Copy accross all contents to a new JSON, then make ammendments
@@ -108,12 +109,11 @@ text. Concretely, you:
    quantities (span, location count) are known precisely.
 4. **Check auto-selected frame ranges**. Any beat you drafted with a search
    window now arrives with start_frame/end_frame
-   already filled in by a deterministic step — don't re-derive or second-
-   guess the pick itself. You only judge three things: 1-did a range come back
+   already filled in by a deterministic step. You cannot change these. You only judge three things: 1-did a range come back
    at all (no range → treat like an infeasible verdict, drop or substitute
    the beat). 2-and is it roughly the length you asked for (well short →
    decide whether the beat still earns its place, same as a
-   feasible-with-constraint verdict). 3-check if it clashes with other beats (exectue R1,8, R1.9). To merge: take the earlier start and later end frame.Concatenate all other fields; or: `archetype`: keep 1  "EVENT_ACTION"  > "EVENT_TRIGGER" > "AFTERMATH">"SOUNDBITE";  `duration`: sum
+   feasible-with-constraint verdict). 3-check if it clashes with other beats (exectue R1,8, R1.9). Do not chagne the cut point tomake them fit. merge them To merge: take the earlier start and later end frame.Concatenate all other fields; or: `archetype`: keep 1  "EVENT_ACTION"  > "EVENT_TRIGGER" > "AFTERMATH">"SOUNDBITE" >"ESTABLISHER";  `duration`: sum
      
 
 Do not judge visual quality. If an asset exists, trust only its measured properties. If visual quality is unknown, flag [NEEDS VISUAL REVIEW].
@@ -148,7 +148,7 @@ Produce an explicit `duration_seconds` when you request a synthetic segment. Cit
 `MAP` - must flag either `GOOGLE_MAP` or `BEV_MAP` and must have `RECON_CAM_POSES`. That is the recon a map is built from, whatever the window length, and it is the only recon a `MAP` beat ever carries — `RECON_3D` never feeds a map and must never be requested on a `MAP` beat. If you also want a `PROJECTION_MAP`, write it as its own separate beat. To add subjects/objects in the field of view, and to analyse their position, speed etc, you must add `TRACKING` to requested_flags. You must populate `search_window_start_seconds`/`search_window_end_seconds`. That window scopes **this beat's own** recon and its own map — each `MAP` beat gets its own, and windows are never merged with another beat's, so write the window you actually want reconstructed for this map rather than a span meant to cover several beats. A beat may request at most one of each recon kind (one `RECON_CAM_POSES` and/or one `RECON_3D`); if you want two separate recons, write two beats. Refer to `PLACES` , `AUDIO TRANSCRIPT`and `DESCRIPTION` to ensure you have movement continuity. E.G. the camera wearer walks smoothly from one location to another. Breaks to this include the camera moving into or out of a vehicle, or there is sudden, impossible change in location e.g. apartement-interior ->police station exterior (this is probably a cut in the video) — splitting into two `MAP` beats is the fix when one window would otherwise straddle such a break.
 
 `PROJECTION_MAP` 
-A moment of action, that is reconstructed in 4D, every frame and then analysed.  It must be from  the most important part of `EVENT_ACTION`. It cannot contain more than 6.5s of frames (GPU will crash), so may be considerably shorter than `EVENT_ACTION` is. This complements, not replaces the `real` `EVENT_ACTION` segment. You must request `RECON_3D` and `TRACKING` in requested flags. Playback can be double the duration of the time range you request. You must populate  `search_window_start_seconds`/`search_window_end_seconds` based on clues from the transcript. If you have `analysis_2d_for_decisions` use that to refine your search: think about the subject masks and how they show who is where. 
+A moment of action, that is reconstructed in 4D, every frame and then analysed.  It must be from  the most important part of `EVENT_ACTION`. It cannot contain more than 6.5s of frames (GPU will crash), so may be considerably shorter than `EVENT_ACTION` is. This complements, not replaces the `real` `EVENT_ACTION` segment. You must request `RECON_3D` and `TRACKING` in requested flags and must populate `tracked_subject` as this is needed for the camera to be designed. You may copy the subjects from `EVENT_ACTION` if they exist. Playback can be double the duration of the time range you request. You must populate  `search_window_start_seconds`/`search_window_end_seconds` based on clues from the transcript. If you have `analysis_2d_for_decisions` use that to refine your search: think about the subject masks and how they show who is where. 
 
  
 # Output structure
@@ -208,7 +208,7 @@ Field rules per beat:
   (see "Visual confirmation requests" below), in which case it's
   `["MASK_OVERLAYS"]` and `tracked_subject` is required.
 - `segment_type: "synthetic"` → `source` is `null`, and `requested_flags` is a required non-empty
-  list of the exact flag names from AVAILABLE FLAGS this beat needs. 
+  list of the exact flag names from PRODUCER FLAGS this beat needs. 
   `start_frame` / `end_frame` if already provided use them verbatim. Only change them if feedback from the user expressely complains about the start or end of a shot. Mark the offending one `null`. 
 
 - `quote` — required for any beat with usable synced dialogue relevant to the
@@ -264,7 +264,7 @@ No timecodes in OBJECTS → can't request a non-person entry, flag
 That's the only file you write. Do **not** separately write a flags file —
 `requested_flags` on each beat is all the information needed, and a
 deterministic step outside this run derives `<case_name>_flags.json` from it
-by unioning every beat's `requested_flags` against the full AVAILABLE FLAGS
+by unioning every beat's `requested_flags` against the full PRODUCER FLAGS
 key set. Re-deriving that document yourself would be pure duplicated
 generation work with no editorial content in it — the data already exists in
 what you wrote.

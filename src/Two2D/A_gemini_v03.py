@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 import json
-import re
+import string
 import dotenv
 import cv2
 
@@ -43,11 +43,10 @@ After your response, append a <machine> block with this exact JSON:
 {"people": [{"person_id": "...", "descriptor": "...", "appearances": [{"start_s": 0, "end_s": 0, "box_2d": [0, 0, 0, 0]}]}]}
 </machine>
 Give every distinct person who appears anywhere in the video a stable person_id
-(zero-padded to two digits, e.g. "person-01", "person-02") -- the same person must keep the same person_id
+(Starting "person-A", "person-B") -- the same person must keep the same person_id
 across every appearance, even in separate, non-contiguous time windows. "descriptor"
-is a short human-readable description (role, clothing, position) to help a human
-tell people apart, but is not used to identify them programmatically -- person_id is
-the only identity key. Each frame, ask: 'Is there someone here?' 
+is a short human-readable description (distinguishing features: appearance, hair, skin, clothing, position, role) to help a human
+tell people apart. Each frame, ask: 'Is there someone here?' 
 Then 'Is this person the same as an existing one?' 
 If new, create a new person_id and add an entry to "appearances" with the time window 
 (start_s integer seconds). If a person stops being present, then add an entry to "appearances" with the time window 
@@ -142,7 +141,7 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
 
     response = client.models.generate_content(
         model="gemini-3.1-pro-preview",
-        contents="Give a detailed Summary of this video. provide start and end times ." + FORMAT_SUFFIX,
+        contents="Give a detailed Summary of this video. provide start and end times. Intervals can be no coarser than 1 minute ." + FORMAT_SUFFIX,
         config=_deterministic_config(cache_name)
     )
     print(response.text)
@@ -191,11 +190,26 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
     _, _, people_machine_block = people_raw.partition("<machine>")
     people_json_str = _strip_code_fence(people_machine_block.partition("</machine>")[0])
     people = json.loads(people_json_str)["people"]
-    # zero-pad whatever it actually returned, so "person-2" sorts before "person-10"
-    for person in people:
-        number = re.search(r"\d+", person["person_id"])
-        if number:
-            person["person_id"] = f"person-{int(number.group()):02d}"
+    # Prompt asks for "person-A", "person-B"... already, but the model isn't
+    # trusted to get the exact format/order right -- reassign here regardless,
+    # by first appearance, so it's never ambiguous with SAM's own numeric
+    # "person-01", "person-02" track-slug convention (see A_ROBOFLOW_SAM3.py).
+    def _first_appearance_s(person):
+        starts = [a["start_s"] for a in person.get("appearances", []) if "start_s" in a]
+        return min(starts) if starts else float("inf")
+
+    def _letter_suffix(i):
+        '''0-indexed -> A, B, ... Z, AA, AB, ... (base-26, letters not digits).'''
+        letters = string.ascii_uppercase
+        s, i = "", i + 1
+        while i > 0:
+            i, r = divmod(i - 1, 26)
+            s = letters[r] + s
+        return s
+
+    people = sorted(people, key=_first_appearance_s)
+    for i, person in enumerate(people):
+        person["person_id"] = f"person-{_letter_suffix(i)}"
 
     # one debug overlay per appearance (not just per person) -- a person can
     # have multiple, possibly non-contiguous, appearance windows and every one

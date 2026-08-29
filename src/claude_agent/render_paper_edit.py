@@ -4,19 +4,27 @@ formatting is deterministic and identical across every run."""
 import json
 from pathlib import Path
 
+from A_Config import MASK_SEARCH_HANDLE_S
+
 # Frames at which SAM3 offloads video+state to host RAM and gets unreliable
 # (see tracking_windows/_merge_spans below). A merge that would push a span
 # past this is refused rather than handed to the tracker.
 SAM3_MAX_TRACK_FRAMES = 650
 
+# The closed set of 8 from CONSTITUTION.md section 0, verbatim -- anything a beat
+# carries that isn't a key here is an invalid archetype and gets raised as an error
+# by _beat_flags. INTERVIEW is the pre-SOUNDBITE name, kept only so older paper
+# edits still render and still validate.
 ARCHETYPE_LABELS = {
     "ESTABLISHER": "Opening shot",
     "EVENT_TRIGGER": "Event — trigger",
     "EVENT_ACTION": "Event — action",
     "AFTERMATH": "Aftermath",
-    "INTERVIEW": "Interview",
+    "SOUNDBITE": "Soundbite",
     "MAP": "Map",
     "METRIC": "Metric",
+    "PROJECTION_MAP": "Projection map",
+    "INTERVIEW": "Interview",  # legacy alias for SOUNDBITE
 }
 
 _STYLE = """
@@ -124,51 +132,79 @@ def render_html(data: dict) -> str:
 """
 
 
-def paper_edit_path(mode="draft"):
+# Every file this pipeline writes into agent_p_output_dir() (paper edit,
+# HTML, flags, feedback) shares one stem: "<asset_name>_<pass>_<kind>". This
+# is the ONLY place that stem gets built -- every writer and every reader
+# elsewhere in the codebase must go through paper_edit_path/paper_edit_stem
+# rather than re-deriving the filename itself, or renaming producer_agent_execution's
+# pass-numbering scheme (or fixing a naming bug here) silently stops applying
+# to whichever caller still hardcodes the old pattern.
+_KIND_FOR_MODE = {"draft": "draft", "draft2": "draft", "revision": "revision"}
+
+
+def paper_edit_stem(mode="draft", pass_n=None):
+    '''"<asset_name>_<pass>_<draft|revision>" -- the shared stem for a pass's
+    paper-edit JSON and every file derived from it. pass_n defaults to
+    A_Config.pass_num() (bump set_pass(...) in the notebook to point this at
+    a later pass); pass an explicit pass_n to reach back to an older one
+    (e.g. pass_num() - 1 for "the previous pass's draft").'''
+    from A_Config import asset_name, pass_num
+    kind = _KIND_FOR_MODE.get(mode, mode)
+    p = pass_num() if pass_n is None else pass_n
+    return f"{asset_name()}_{p}_{kind}"
+
+
+def paper_edit_path(mode="draft", pass_n=None):
     '''Current case's paper-edit JSON on disk, from A_Config -- so every
     function here is callable with no path after a kernel restart, when the
     value run_producer_agent returned is gone. "draft" is the pre-revision
     file, anything else the revised one.'''
-    from A_Config import agent_p_output_dir, case_name
-    suffix = "_paper_edit_draft.json" if mode == "draft" else "_paper_edit.json"
-    return agent_p_output_dir() / f"{case_name()}{suffix}"
+    from A_Config import agent_p_output_dir
+    return agent_p_output_dir() / f"{paper_edit_stem(mode, pass_n)}.json"
+
+
+def flags_path(mode="draft", pass_n=None):
+    from A_Config import agent_p_output_dir
+    return agent_p_output_dir() / f"{paper_edit_stem(mode, pass_n)}_flags.json"
+
+
+def feedback_path(mode="draft", pass_n=None):
+    from A_Config import agent_p_output_dir
+    return agent_p_output_dir() / f"{paper_edit_stem(mode, pass_n)}_feedback.json"
 
 
 def render_and_save(paper_edit_json_path: str | Path = None) -> Path:
-    """Reads a Producer-written <case_name>_paper_edit.json and writes the
-    matching <case_name>_paper_edit.html next to it. Returns the html path."""
+    """Reads a Producer-written paper-edit JSON and writes the matching HTML
+    next to it, same stem. Returns the html path."""
     json_path = Path(paper_edit_json_path or paper_edit_path())
     data = json.loads(json_path.read_text(encoding="utf-8"))
     html = render_html(data)
-    html_path = json_path.with_name(json_path.stem.replace("_paper_edit", "") + "_paper_edit.html")
+    html_path = json_path.with_suffix(".html")
     html_path.write_text(html, encoding="utf-8")
     return html_path
 
 
 # Recon kind per requested flag. RECON_CAM_POSES is the camera-track solve behind
 # MAP assets; RECON_3D is the solve of a moment of action, for physics and novel
-# views (see producer.md's AVAILABLE FLAGS).
+# views (see producer.md's PRODUCER FLAGS).
 RECON_FLAG_KINDS = {"RECON_CAM_POSES": "MAP", "RECON_3D": "EVENT"}
 
 
+def wants_projection_map(beat: dict) -> bool:
+    """Is this beat a projection map? PROJECTION_MAP is BOTH an archetype (the
+    closed set in CONSTITUTION.md section 0, which is how W_video_editor decides
+    what clip to build) and a menu flag the notebook gates its rendering cell on,
+    so the Producer can legitimately express it either way. Every test in this
+    file goes through here rather than looking in one field only -- checking
+    requested_flags alone silently dropped every PROJECTION_MAP-archetype beat,
+    flag off and no RECON_3D."""
+    return (beat.get("archetype") == "PROJECTION_MAP"
+            or "PROJECTION_MAP" in (beat.get("requested_flags") or []))
+
+
 def beat_recon_flags(beat: dict) -> set[str]:
-    """Which recon flags ONE beat actually needs -- the single place that decision
-    is made, used both by _beat_flags (to derive the global flags file) and by
-    build_recon_requests (to hand the notebook its jobs), so the two can't drift.
+    """Which recon flags ONE beat actually needs """
 
-    Same doctrine as the rest of _beat_flags: correct what we have a rule for,
-    trust requested_flags where we don't.
-    This returns RECON flags only. A beat's other flags -- TRACKING (which a MAP
-    beat always needs), GOOGLE_MAP/BEV_MAP, MASK_OVERLAYS -- are decided in
-    _beat_flags and are not affected by anything here.
-
-    - MAP beat: RECON_CAM_POSES as its one and only recon, overriding whatever was
-      requested. A map is built off the camera-track solve, and a MAP beat never
-      carries an EVENT recon -- not even for a PROJECTION_MAP, which belongs on its
-      own beat (_beat_flags raises that as an error for the Producer to fix).
-      Window length doesn't enter into it: a short MAP beat still gets a MAP recon.
-    - PROJECTION_MAP on any other beat is a novel view of a RECON_3D, so it needs one.
-    - Anything else: no rule, so the beat's own request stands."""
     requested = set(beat.get("requested_flags") or [])
     has_window = (beat.get("search_window_start_seconds") is not None
                   and beat.get("search_window_end_seconds") is not None)
@@ -177,7 +213,7 @@ def beat_recon_flags(beat: dict) -> set[str]:
         return {"RECON_CAM_POSES"}
 
     flags = requested & set(RECON_FLAG_KINDS)
-    if "PROJECTION_MAP" in requested and has_window:
+    if wants_projection_map(beat) and has_window:
         flags.add("RECON_3D")
     return flags
 
@@ -192,6 +228,16 @@ def _beat_flags(beat: dict, fps: float, gps_signal: str | None, errors: list[str
     flags = set()
     requested = beat.get("requested_flags") or []
     beat_id = beat.get("beat_id")
+
+    # Archetype drives real dispatch downstream (W_video_editor picks the clip
+    # kind off it), so a value outside the closed set doesn't fail here -- it
+    # just quietly builds nothing. Catch it as something Producer must fix.
+    if beat.get("archetype") not in ARCHETYPE_LABELS:
+        errors.append(
+            f"Beat {beat_id} has archetype {beat.get('archetype')!r}, which is not "
+            f"one of {sorted(ARCHETYPE_LABELS)} -- Producer must use the closed set "
+            f"in CONSTITUTION.md section 0, verbatim."
+        )
 
     # TRACKING -- beat asks for a subject to be tracked.
     if beat.get("tracked_subject"):
@@ -235,7 +281,9 @@ def _beat_flags(beat: dict, fps: float, gps_signal: str | None, errors: list[str
     # PROJECTION_MAP -- no rule yet on when it's needed, trust the LLM on
     # that. But it's a novel view of a RECON_3D, so it always needs one --
     # beat_recon_flags below is what actually adds that RECON_3D.
-    if "PROJECTION_MAP" in requested:
+    # wants_projection_map, not `in requested`: the archetype is the Producer's
+    # usual way of asking for one (see CONSTITUTION.md section 0).
+    if wants_projection_map(beat):
         if beat.get("archetype") == "MAP":
             # A MAP beat only ever carries its RECON_CAM_POSES, so there'd be no
             # RECON_3D here for the projection to be a novel view of. Not something
@@ -306,89 +354,111 @@ def derive_flags(paper_edit_json_path: str | Path = None, available_flag_keys=No
 
 
 def derive_and_save_flags(paper_edit_json_path: str | Path = None, available_flag_keys=None, fps: float = None, gps_signal: str = None) -> Path:
-    """Writes <case_name>_flags.json as before. Also writes
-    <case_name>_assistant_feedback.json (errors + notes from derive_flags) --
-    that's the file to read from when building a MODE: revision re-draft
-    prompt for Producer."""
+    """Writes "<stem>_flags.json" and "<stem>_feedback.json" (errors + notes
+    from derive_flags) next to the given paper edit -- "<stem>_feedback.json"
+    is the file to read from when building a MODE: revision re-draft prompt
+    for Producer. Both derive their name from json_path's own stem (not
+    A_Config.pass_num()) so they always match the pass that was actually
+    read, even if pass_num() has since moved on."""
     json_path = Path(paper_edit_json_path or paper_edit_path())
     flags, errors, notes = derive_flags(json_path, available_flag_keys, fps, gps_signal)
-    flags_path = json_path.with_name(json_path.stem.replace("_paper_edit", "") + "_flags.json")
-    flags_path.write_text(json.dumps(flags, indent=2), encoding="utf-8")
+    flags_file = json_path.with_name(json_path.stem + "_flags.json")
+    flags_file.write_text(json.dumps(flags, indent=2), encoding="utf-8")
 
-    feedback_path = json_path.with_name(json_path.stem.replace("_paper_edit", "") + "_ast_fb.json")
-    feedback_path.write_text(json.dumps({"errors": errors, "notes": notes}, indent=2), encoding="utf-8")
+    feedback_file = json_path.with_name(json_path.stem + "_feedback.json")
+    feedback_file.write_text(json.dumps({"errors": errors, "notes": notes}, indent=2), encoding="utf-8")
 
-    return flags_path
+    return flags_file
 
 
-def tracking_windows(beat: dict, beats: list[dict]) -> list[tuple[float, float]]:
-    """The time windows this beat's tracked_subject should actually be searched over.
+def _beat_window(beat: dict) -> tuple[float, float] | None:
+    """Beat's search window, or None if the Producer set no window. A real beat gets
+    MASK_SEARCH_HANDLE_S either side (start clamped at 0): the Producer only guesses
+    when the subject appears, and the pad gives SAM3 room to find the real onset.
+    Synthetic beats aren't cut against an onset, so they get the window as written."""
+    start_s = beat.get("search_window_start_seconds")
+    end_s = beat.get("search_window_end_seconds")
+    if start_s is None or end_s is None:
+        return None
+    pad_s = MASK_SEARCH_HANDLE_S if beat.get("segment_type") == "real" else 0.0
+    return max(0.0, start_s - pad_s), end_s + pad_s
 
-    A real beat searches its own window -- short, consecutive footage, which is the
-    only shape SAM3 tracks well.
 
-    A MAP beat normally searches nothing. Its window is recon-scale (7700 frames on
-    a 4-minute map), and SAM3 cannot track a sampled subset of that: tried at 1.3s
-    and at 0.4s frame spacing, and both produced masks oscillating between empty and
-    whole-frame, because propagation conditions on ~6 previous frames that at those
-    gaps are unrelated images. Its subjects are expected to be covered by the event
-    beats instead.
-
-    BUT if no real beat tracks anything, the Producer has left the map's subjects
-    with nowhere else to be found -- so sweep up the event footage: every real
-    beat's window inside the MAP's span, merged. That is derived here rather than
-    demanded of the Producer, and it deliberately does not put those subjects onto
-    the event beats themselves (see build_tracking_requests on beat_ids), so no
-    beat gains a mask overlay it never asked for.
-
-    Used by build_tracking_requests and AY_claude_crop_matcher.descriptor_targets;
-    they held separate copies of this rule and drifted, which cost a debugging
-    session when one was fixed and the other silently kept returning nothing."""
+def tracking_windows(beat: dict, beats: list[dict], fps: float = None) -> list[tuple[float, float]]:
+    """Real beat -> its own window. MAP beat: own window if <=SAM3_MAX_TRACK_FRAMES;
+    else [] if real tracked beats fully cover it; else chunk own window into
+    <=SAM3_MAX_TRACK_FRAMES pieces. fps (avg, approximate -- see video_fps) is only
+    used for the frame-count->duration check; read from the video if not given.
+    Every window comes from _beat_window, which is where the real-beat pad lives."""
     if beat.get("archetype") != "MAP":
-        start_s = beat.get("search_window_start_seconds")
-        end_s = beat.get("search_window_end_seconds")
-        return [] if start_s is None or end_s is None else [(start_s, end_s)]
+        window = _beat_window(beat)
+        return [] if window is None else [window]
 
-    if any(b.get("tracked_subject") for b in beats if b.get("archetype") != "MAP"):
-        return []   # event beats cover it; the normal path
+    map_window = _beat_window(beat)
+    if map_window is None:
+        return []
+    map_start, map_end = map_window
 
-    map_start = beat.get("search_window_start_seconds")
-    map_end = beat.get("search_window_end_seconds")
-    spans = [
-        (b["search_window_start_seconds"], b["search_window_end_seconds"], ())
-        for b in beats
-        if b.get("segment_type") == "real"
-        and b.get("search_window_start_seconds") is not None
-        and b.get("search_window_end_seconds") is not None
-        and (map_start is None or b["search_window_end_seconds"] > map_start)
-        and (map_end is None or b["search_window_start_seconds"] < map_end)
-    ]
-    if not spans:
-        raise ValueError(
-            f"MAP beat {beat.get('beat_id')} is the only beat tracking anything, but "
-            f"there are no real beats inside its window to search -- nothing to sweep."
-        )
-    # Deliberately NOT merged. Merging touching windows is right when a Producer
-    # names a subject across two adjacent beats, but the sweep hands every subject
-    # every window, so adjacent beats chain: (15,33)+(33,65) becomes a single
-    # 1500-frame span, well past the 650 at which SAM3 offloads video+state to host
-    # RAM. Kept as the Producer's own beat windows, the worst case here is 960.
-    return [(start_s, end_s) for start_s, end_s, _ in sorted(spans)]
-
-
-def build_tracking_requests(paper_edit_json_path: str | Path = None, fps: float = None) -> list[dict]:
-    """Merges tracked_subject spans per subject into list[{"subject","start_s","end_s","beat_ids"}].
-    Spans are the Producer's search windows -- tracking runs before find_all_cut_points,
-    so no beat has resolved frames yet.
-    A gem_person_id dict entry groups under subject="person" (one class scan, not per-person).
-    Which windows a beat contributes comes from tracking_windows -- normally its own,
-    but a MAP beat sweeps the event footage when nothing else tracks anything."""
-    if not fps:
-        # Only read the video when the caller didn't already have fps -- keeps this
-        # callable (and testable) without the cv2/ffmpeg stack B_video_processing pulls in.
+    if fps is None:
         from A_Config import source_video_path
         from Two2D.B_video_processing import video_fps
         fps = video_fps(source_video_path())
+    max_span_seconds = SAM3_MAX_TRACK_FRAMES / fps
+
+    if map_end - map_start <= max_span_seconds:
+        return [(map_start, map_end)]
+
+    covering = sorted(
+        w
+        for w in (
+            _beat_window(b)
+            for b in beats
+            if b.get("segment_type") == "real" and b.get("tracked_subject")
+        )
+        if w is not None and w[1] > map_start and w[0] < map_end
+    )
+    if _fully_covers(covering, map_start, map_end):
+        return []
+
+    chunks = []
+    t = map_start
+    while t < map_end:
+        chunks.append((t, min(map_end, t + max_span_seconds)))
+        t += max_span_seconds
+    return chunks
+
+
+def _fully_covers(spans: list[tuple[float, float]], start: float, end: float) -> bool:
+    """True if sorted (s, e) spans leave no gap across [start, end]."""
+    cur = start
+    for s, e in spans:
+        if s > cur:
+            return False
+        cur = max(cur, e)
+    return cur >= end
+
+
+def build_tracking_requests(paper_edit_json_path: str | Path = None, fps: float = None,
+                             video_path: str | Path = None) -> list[dict]:
+    """Merges tracked_subject spans per subject into list[{"subject","start_s","end_s","beat_ids"}].
+    Spans are the Producer's search windows, MASK_SEARCH_HANDLE_S-padded on real beats
+    (see tracking_windows) -- tracking runs before find_all_cut_points, so no beat
+    has resolved frames yet.
+    A gem_person_id dict entry groups under subject="person" (one class scan, not per-person).
+    Which windows a beat contributes comes from tracking_windows -- see there for the
+    MAP-beat cases (own window / covered by others / chunked)."""
+    if not video_path:
+        from A_Config import source_video_path
+        video_path = source_video_path()
+    if not fps:
+        # Only read the video when the caller didn't already have fps -- keeps this
+        # callable (and testable) without the cv2/ffmpeg stack B_video_processing pulls in.
+        from Two2D.B_video_processing import video_fps
+        fps = video_fps(video_path)
+    # fps is only used for this frame-count -> duration threshold, not for any
+    # seconds->frame conversion below (those use real per-frame timestamps
+    # via frame_indices_at_times instead, since a single fps misrepresents
+    # the true local rate on VFR sources).
     max_span_seconds = SAM3_MAX_TRACK_FRAMES / fps
 
     data = json.loads(Path(paper_edit_json_path or paper_edit_path()).read_text(encoding="utf-8"))
@@ -425,14 +495,11 @@ def build_tracking_requests(paper_edit_json_path: str | Path = None, fps: float 
     if cast:
         expected_by_subject["person"] = len(cast)
 
-    swept = False
     for beat in data["beats"]:
         tracked = beat.get("tracked_subject")
         if not tracked:
             continue
-        windows = tracking_windows(beat, data["beats"])
-        if windows and beat.get("archetype") == "MAP":
-            swept = True
+        windows = tracking_windows(beat, data["beats"], fps=fps)
         # beat_ids is this beat's own, even for a MAP beat searching event windows --
         # the masks belong to the map, and tagging them with the event beats would
         # give those beats a mask overlay in assemble_paper_edit that they never
@@ -443,26 +510,36 @@ def build_tracking_requests(paper_edit_json_path: str | Path = None, fps: float 
                 subject = "person" if isinstance(tracked_subject_entry, dict) else tracked_subject_entry
                 spans_by_subject.setdefault(subject, []).append((start_s, end_s, beat_ids))
 
-    requests = []
+    # Pass 1: resolve every subject's merged spans (cheap, in-memory) before
+    # touching the video at all.
+    pending = []  # (subject, start_s, end_s, beat_ids)
     for subject, spans in spans_by_subject.items():
-        # Merging touching spans is right when the Producer named a subject across
-        # adjacent beats. It is wrong for a swept MAP beat, where every subject gets
-        # every window and adjacent beats would chain into spans far past the 650
-        # frames at which SAM3 offloads -- so a sweep keeps the beat windows as-is.
-        # (When the sweep fires it is the only source of spans, so this is all-or-nothing.)
         # set() because the eight gem_person_id entries all collapse to subject
         # "person" and would otherwise queue the same span eight times -- _merge_spans
-        # used to absorb that silently.
-        for start_s, end_s, beat_ids in (sorted(set(spans)) if swept
-                                          else _merge_spans(spans, max_span_seconds)):
-            # Check tracking hasn't already been done
-            start_frame, end_frame = round(start_s * fps), round(end_s * fps)
-            span_range = range(start_frame, end_frame + 1)
-            if detections_dict.get(_slugify_subject(subject), set()).intersection(span_range):
-                continue
-            requests.append({"subject": subject, "start_s": start_s, "end_s": end_s,
-                              "beat_ids": sorted(beat_ids),
-                              "expected_count": expected_by_subject.get(subject)})
+        # used to absorb that silently. _merge_spans itself caps any merge at
+        # max_span_seconds, so this can't chain a MAP beat's own chunks (or anything
+        # else) back into an oversized span.
+        for start_s, end_s, beat_ids in _merge_spans(sorted(set(spans)), max_span_seconds):
+            pending.append((subject, start_s, end_s, beat_ids))
+
+    # One batched real-timestamp->frame lookup for every span, instead of
+    # round(seconds*fps) per span -- inaccurate on VFR sources.
+    from Two2D.B_video_processing import frame_indices_at_times
+    flat_targets = [v for p in pending for v in (p[1], p[2])]
+    flat_frames = frame_indices_at_times(video_path, flat_targets) if flat_targets else []
+
+    requests = []
+    for i, (subject, start_s, end_s, beat_ids) in enumerate(pending):
+        start_frame, end_frame = flat_frames[2 * i], flat_frames[2 * i + 1]
+        span_frames = set(range(start_frame, end_frame + 1))
+        # Skip only if every frame in this span is already tracked -- a partial
+        # overlap (e.g. a widened window) means new frames still need tracking.
+        if span_frames <= detections_dict.get(_slugify_subject(subject), set()):
+            continue
+        requests.append({"subject": subject, "start_s": start_s, "end_s": end_s,
+                          "beat_ids": sorted(beat_ids),
+                          "expected_count": expected_by_subject.get(subject)})
+    print(requests)
     return requests
 
 
@@ -510,7 +587,7 @@ def beat_key(beat: dict) -> str:
     return beat["beat_id"][0]
 
 
-def build_recon_requests(paper_edit_json_path=None, fps=None) -> list[dict]:
+def build_recon_requests(paper_edit_json_path=None, video_path=None) -> list[dict]:
     '''One entry per (beat, recon kind) the Producer asked for, in beat order.
 
     A beat may need both RECON_CAM_POSES and RECON_3D, so it yields up to two
@@ -529,17 +606,18 @@ def build_recon_requests(paper_edit_json_path=None, fps=None) -> list[dict]:
 
     json_path = Path(paper_edit_json_path or paper_edit_path())
     data = json.loads(json_path.read_text(encoding="utf-8"))
-    if not fps:
-        # Only read the video when the caller didn't already have fps -- keeps this
+    if not video_path:
+        # Only read the video when the caller didn't already have it -- keeps this
         # callable (and testable) without the cv2/ffmpeg stack B_video_processing pulls in.
         from A_Config import source_video_path
-        from Two2D.B_video_processing import video_fps
-        fps = video_fps(source_video_path())
+        video_path = source_video_path()
 
     dirs = {"MAP":   (frames_for_cam_poses_dir, recon_for_MAP_dir),
             "EVENT": (frames_for_recon_dir,     recon_for_EVENT_dir)}
 
-    requests = []
+    # Pass 1: collect every beat/flag's window (cheap, in-memory) before
+    # touching the video at all.
+    pending = []  # (beat, flag, kind, start_s, end_s)
     for beat in sorted(data["beats"], key=lambda b: b["order"]):
         needed = beat_recon_flags(beat)
         for flag in sorted(needed):
@@ -552,25 +630,37 @@ def build_recon_requests(paper_edit_json_path=None, fps=None) -> list[dict]:
                     f"search_window_start_seconds/search_window_end_seconds in {json_path.name} "
                     f"-- Producer must set them."
                 )
-            key = beat_key(beat)
-            frames_dir_fn, recon_dir_fn = dirs[kind]
-            requests.append({
-                "beat_key":    key,
-                "beat_ids":    list(beat["beat_id"]),
-                "order":       beat["order"],
-                "archetype":   beat.get("archetype"),
-                "kind":        kind,
-                "flag":        flag,
-                "start_frame": round(start_s * fps),
-                "end_frame":   round(end_s * fps),
-                "frames_dir":  frames_dir_fn(key),
-                "recon_dir":   recon_dir_fn(key),
-                # The beat itself, so renderers that need more of it than the key
-                # (R_map_animator/P_trace_overlayer want duration_seconds and
-                # requested_flags) don't have to re-open the paper edit to find it.
-                "beat":        beat,
-            })
-            print(f"{key} {kind} ({flag}): {start_s}-{end_s}s @ {fps}fps "
-                  f"-> frames {requests[-1]['start_frame']}-{requests[-1]['end_frame']}")
+            pending.append((beat, flag, kind, start_s, end_s))
+
+    # One batched real-timestamp->frame lookup for every beat/flag, instead of
+    # round(seconds*fps) per beat -- inaccurate on VFR sources; these become
+    # the actual recon sampling frame bounds.
+    from Two2D.B_video_processing import frame_indices_at_times
+    flat_targets = [v for p in pending for v in (p[3], p[4])]
+    flat_frames = frame_indices_at_times(video_path, flat_targets) if flat_targets else []
+
+    requests = []
+    for i, (beat, flag, kind, start_s, end_s) in enumerate(pending):
+        start_frame, end_frame = flat_frames[2 * i], flat_frames[2 * i + 1]
+        key = beat_key(beat)
+        frames_dir_fn, recon_dir_fn = dirs[kind]
+        requests.append({
+            "beat_key":    key,
+            "beat_ids":    list(beat["beat_id"]),
+            "order":       beat["order"],
+            "archetype":   beat.get("archetype"),
+            "kind":        kind,
+            "flag":        flag,
+            "start_frame": start_frame,
+            "end_frame":   end_frame,
+            "frames_dir":  frames_dir_fn(key),
+            "recon_dir":   recon_dir_fn(key),
+            # The beat itself, so renderers that need more of it than the key
+            # (R_map_animator/P_trace_overlayer want duration_seconds and
+            # requested_flags) don't have to re-open the paper edit to find it.
+            "beat":        beat,
+        })
+        print(f"{key} {kind} ({flag}): {start_s}-{end_s}s "
+              f"-> frames {start_frame}-{end_frame}")
 
     return requests

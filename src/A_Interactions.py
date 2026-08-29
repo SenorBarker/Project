@@ -7,7 +7,7 @@ import torch
 
 from ultralytics import YOLO
 from C_CSV_report import add_to_report
-from Two2D.B_video_processing import seek_exact
+from Two2D.B_video_processing import seek_exact, frame_indices_at_times
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 MODEL_PATH = "Models/yolo_checkpoints/yolo26l-seg.pt"
@@ -39,10 +39,16 @@ def subject_selector(
     cap = cv2.VideoCapture(video_path)
     native_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     native_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    fps = cap.get(cv2.CAP_PROP_FPS)
     # round up to the nearest multiple of YOLO's max stride (32) so predict()
     # doesn't silently re-pad (and warn about it) on every single call
     predict_imgsz = (-(-native_h // 32) * 32, -(-native_w // 32) * 32)
+
+    # One batched real-timestamp->frame lookup for every detection's
+    # mid/start/end, instead of seconds*fps per detection -- inaccurate on
+    # VFR sources.
+    flat_targets = [v for det in detections
+                    for v in ((det["start_s"] + det["end_s"]) / 2, det["start_s"], det["end_s"])]
+    flat_frames = frame_indices_at_times(video_path, flat_targets) if flat_targets else []
 
     previews = []
     for i, det in enumerate(detections):
@@ -54,9 +60,7 @@ def subject_selector(
             continue
         subject_ids = [name_to_id[max(class_matches, key=len)]]
 
-        mid_frame = int((det["start_s"] + det["end_s"]) / 2 * fps)
-        start_f   = int(det["start_s"] * fps)
-        end_f     = int(det["end_s"]   * fps)
+        mid_frame, start_f, end_f = flat_frames[3 * i], flat_frames[3 * i + 1], flat_frames[3 * i + 2]
 
         # one seek + sequential decode over the whole range, instead of a seek per
         # candidate — cap.set() replays from the last keyframe every time, so

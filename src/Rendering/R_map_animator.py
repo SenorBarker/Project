@@ -289,8 +289,8 @@ def main(
         # cell runs).
         map_beat = beat
         if map_beat is None:
-            paper_edit_path = agent_p_output_dir() / f"{case_name()}_paper_edit.json"
-            paper_edit = json.loads(paper_edit_path.read_text(encoding="utf-8"))
+            from render_paper_edit import paper_edit_path
+            paper_edit = json.loads(paper_edit_path("revision").read_text(encoding="utf-8"))
             map_beat = next(b for b in paper_edit["beats"] if b["archetype"] == "MAP")
         _duration = map_beat["duration_seconds"]
 

@@ -77,7 +77,11 @@ def attach_times_of_day(video_path, fps):
     aren't frame numbers.'''
     path = report_path()
     existing = pd.read_csv(path)
-    vid_start = video_start_time(video_path)
+    try:
+        vid_start = video_start_time(video_path)
+    except ValueError as e:
+        print(f"skipping attach_times_of_day: {e}")
+        return
     add_to_report({"{{Video_start_time}}": vid_start})
 
     frame_rows = existing[existing["key"].str.endswith("_frame")]

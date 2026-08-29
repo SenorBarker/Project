@@ -16,11 +16,11 @@ Rules the planning agent follows for paper edits. Every decision must cite a rul
     - `PROJECTION_MAP`- 4D rendering of an `EVENT_ACTION`
     
 1. Picture Editing  
-    R1.1 
-    R1.2
-    R1.3  
-    R1.4  
-    R1.5 
+    R1.1 [FOOTAGE] — No jump cuts on the same subject; change angle by 30°+ or shot size.  
+    R1.2 [FOOTAGE] — Cut on action.  
+    R1.3 [FOOTAGE] — Keep screen direction consistent unless bridged.  
+    R1.4 [FOOTAGE] — Match eyeline and position or flag a break.  
+    R1.5 [FOOTAGE] — Establish a location before tighter coverage, unless the cold open withholds it.  
     R1.6 - Primary cut points are before and after beats start and end.
     R1.7 - A beat can contain multiple clips
     R1.8 - Merge clips into one if they are from the same camera and there is either overlap, no gap, or only a short pause between them.
@@ -31,9 +31,13 @@ Rules the planning agent follows for paper edits. Every decision must cite a rul
 2. Sound Editing  
     R2.1 — Do not cut mid-beat: a cut point must not fall inside a word, sentence, or coherent exchange with usable audio. Move the cut to the nearest boundary (R4.1).
     R2.2 - Audio that is not relevent to the subject of a beat doesn't belong in the beat and should be editied out, as long as R1.9 is satisfied
-        
+    R2.3 [FOOTAGE] — Keep ambience under every cut; no hard silence.  
+    R2.4 [FOOTAGE] — Prefer L-cuts/J-cuts over hard sound cuts.  
+    R2.5 [FOOTAGE] — Match loudness across sources.  
+    R2.6 [FOOTAGE] — Music must not punctuate factual changes.
+    
 3. Sourcing & Balance  
-    R3.1
+    R3.1 [IGNORE] — Contested claims need two sources or a single-source flag.  
     R3.2 — No statistic without source and timeframe.  
     R3.3 — Include dissent or flag its absence.
     
@@ -48,9 +52,8 @@ Rules the planning agent follows for paper edits. Every decision must cite a rul
 5. Metrics & Map Usage  
     R5.1 — MAP synthetics are high prioirity. Always request one.  
     R5.2 — Use a google map only if geography matters. spatial questions like "where...", "how far" can be considered geographical questions.  
-    R5.3 — MAP durations need to be as long as possible, without introducing clear recon errors. They need to cover `EVENT_ACTION`, `EVENT_TRIGGER` and `AFTERMATH` as long as this doesn't lead to extreme changes in location taht can't be reasonably mapped with a 3D reconstruction
+    R5.3 — MAP durations need to be as long as possible, without introducing clear recon errors.
     R5.4 — Where people are and where they go can be covered by a MAP. Use RECON_3D if something fast is happening that will be missed by the low sample rate of the map. 
-    R5.5 — Use the map to showt he location of key people.
     
 6. Structure & Pacing  
     R6.1 — Do not open with out-of-order soundbites, hooks or teasers

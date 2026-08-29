@@ -140,19 +140,18 @@ def analysis_2D(video_path, api_key):
 
     return analysis_2d_for_decisions
 
-def mask_analysis(masks_dir, report_prefix=None):
+def mask_analysis(masks_dir, report_prefix=None, video_path=None):
     '''Disk-based frame/contiguity analysis for a masks folder already on
     disk -- rebuilds the same shape A_ROBOFLOW_SAM3.track_subject_sam3
     computes in-process, without re-running SAM3 (expensive); also the
     primary path for a tracker that doesn't build this itself (e.g.
     A_YOLO_seg). report_prefix (e.g. "beat03") scopes the CSV rows so
     multiple beats don't overwrite each other's keys -- omit for a
-    single-subject/whole-video call.
+    single-subject/whole-video call. video_path defaults to the current
+    case's source video (A_Config.source_video_path()).
 
     No detections -> returns a "no detections" entry (all Nones/empty)
     instead of raising, same as track_subject_sam3's per-beat handling.'''
-    fps = 30 #obtained from image sequencer
-
     frames_list, subject_duration_frames = frames_present(masks_dir)
 
     if not frames_list:
@@ -172,13 +171,22 @@ def mask_analysis(masks_dir, report_prefix=None):
 
     seqs, best_idx        = contiguous_durations(frames_list, tolerance =15)
 
+    # Real elapsed time between the actual first/last subject frames, not a
+    # frame-count divided by any fps (hardcoded or averaged) -- a duration
+    # count of frames means nothing on its own until you know the real time
+    # those specific frames were decoded at, which drifts on VFR sources.
+    from A_Config import source_video_path
+    from Two2D.B_video_processing import frame_times_at_indices
+    times = frame_times_at_indices(video_path or source_video_path(), [subject_start, subject_end])
+    subject_duration_s = times[subject_end] - times[subject_start]
+
     prefix = f"{report_prefix}_" if report_prefix else ""
     analysis_2d_for_CSV = {
         # count/range, not a position in the video -- must NOT end in "_frame" or
         # attach_times_of_day will wrongly treat it as a frame index and convert
         # it into a clock time instead of a duration
         f"{prefix}subject_duration_frame_count": subject_duration_frames,
-        f"{prefix}{{{{subject_duration_s}}}}"   : subject_duration_frames / fps,
+        f"{prefix}{{{{subject_duration_s}}}}"   : subject_duration_s,
         f"{prefix}first_frame"          : subject_start,
         f"{prefix}last_frame"           : subject_end,
     }
@@ -198,39 +206,23 @@ def mask_analysis(masks_dir, report_prefix=None):
     return analysis_2d_for_decisions
 
 
-def analysis_2d_from_masks(paper_edit_json_path):
-    '''Runs analysis on every tracked mask folder on disk at
-    sam3_masks_dir()/<subject_slug>-<track_id>/ -- masks are stored per
-    instance, flat, possibly spanning several beats' merged windows.
-    Each instance's full tracked range is reported as-is -- this runs before
-    find_all_cut_points, so no beat has resolved frames to filter against.
-
-    The live tracker (A_ROBOFLOW_SAM3.track_subject_sam3) knows exactly which
-    request produced each track_id, but that result only ever lives in memory
-    -- disk only keeps the masks themselves and detections.csv, neither of
-    which records beat_ids. So beat_ids here is approximated by frame overlap:
-    a gem_person_id dict entry names "person" (per build_tracking_requests),
-    so several beats can share one subject_slug, and matching by name alone
-    would blanket-credit every such beat to every person track. Instead each
-    beat's tracking_windows are converted to frame ranges and only credited to
-    an instance whose own frame range actually overlaps -- a plain range
-    check, not exact frame matching, since a beat's window and its masks were
-    never going to line up frame-for-frame anyway (tracking dropout, edge
-    frames). An instance with no masks has nothing to test overlap against,
-    so it gets no beat_ids -- it still gets a full entry here, just with no
-    beat attributed.'''
+def analysis_2d_tracking_recovery(paper_edit_json_path):
+    '''
+    Checks paper edit for tracking requests. Repoulates analysis_2d_for_decisions with the tracking results by checking disk
+      '''
     from A_Config import sam3_masks_dir, source_video_path
     from run_models.A_ROBOFLOW_SAM3 import _slugify_subject
     from render_paper_edit import tracking_windows, beat_key
-    from Two2D.B_video_processing import video_fps
+    from Two2D.B_video_processing import frame_indices_at_times
 
     data = json.loads(Path(paper_edit_json_path).read_text(encoding="utf-8"))
     masks_root = sam3_masks_dir()
-    fps = video_fps(source_video_path())
+    video_path = source_video_path()
 
-    # subject_slug -> [(beat_key, beat_id_list, start_frame, end_frame), ...] --
-    # cheap in-memory pass, no disk touched yet.
-    windows_by_slug = {}
+    # Pass 1: collect every beat's tracking windows (cheap in-memory pass, no
+    # disk/video touched yet) alongside every (start_s, end_s) pair that will
+    # need a frame lookup.
+    pending = []  # (key, beat_id, subject_slugs, start_s, end_s)
     for beat in data["beats"]:
         if not beat.get("tracked_subject"):
             continue
@@ -241,83 +233,109 @@ def analysis_2d_from_masks(paper_edit_json_path):
         )
         subject_slugs = list(map(_slugify_subject, subjects))
         for start_s, end_s in tracking_windows(beat, data["beats"]):
-            start_frame, end_frame = round(start_s * fps), round(end_s * fps)
-            for subject_slug in subject_slugs:
-                windows_by_slug.setdefault(subject_slug, []).append(
-                    (key, beat["beat_id"], start_frame, end_frame)
-                )
+            pending.append((key, beat["beat_id"], subject_slugs, start_s, end_s))
+
+    # One batched real-timestamp lookup for every window, instead of
+    # round(seconds*fps) per window -- inaccurate on VFR sources. This is an
+    # overlap test against on-disk mask ranges, not a hard no-go boundary, so
+    # nearest-match (the default mode) is the right semantic here.
+    flat_targets = [v for p in pending for v in (p[3], p[4])]
+    flat_frames = frame_indices_at_times(video_path, flat_targets) if flat_targets else []
+
+    windows_by_slug = {}
+    for i, (key, beat_id, subject_slugs, start_s, end_s) in enumerate(pending):
+        start_frame, end_frame = flat_frames[2 * i], flat_frames[2 * i + 1]
+        for subject_slug in subject_slugs:
+            windows_by_slug.setdefault(subject_slug, []).append(
+                (key, beat_id, start_frame, end_frame)
+            )
 
     analysis_2d_for_decisions = {}
     track_dirs = sorted(p for p in masks_root.iterdir() if p.is_dir() and not p.name.startswith("_"))
+    dirs_by_slug = {}
     for track_dir in track_dirs:
-        instance_key = track_dir.name
-        subject_slug = instance_key.rsplit("-", 1)[0]
-        frames_list = sorted(frames_present(track_dir)[0])
-        frame_span = (frames_list[0], frames_list[-1]) if frames_list else None
+        dirs_by_slug.setdefault(track_dir.name.rsplit("-", 1)[0], []).append(track_dir)
 
-        matching = [
-            (beat_key_, beat_ids_)
-            for beat_key_, beat_ids_, start_frame, end_frame in windows_by_slug.get(subject_slug, [])
-            if frame_span is not None and start_frame <= frame_span[1] and frame_span[0] <= end_frame
-        ]
-        beat_ids = sorted({beat_id for _, ids in matching for beat_id in ids})
-
-        if not frames_list:
-            print(f"no masks for {instance_key}")
-            entry = {
+    # Keys come from requested subjects + existing track dirs, not dirs alone.
+    for subject_slug in dict.fromkeys(list(windows_by_slug) + list(dirs_by_slug)):
+        windows = windows_by_slug.get(subject_slug, [])
+        dirs = dirs_by_slug.get(subject_slug, [])
+        #no tracks exist
+        if not dirs:
+            print(f"tracking missing for {subject_slug}")
+            analysis_2d_for_decisions[subject_slug] = {
                 "Subject_frames_present": [],
                 "subject_first_frame": None,
                 "subject_last_frame": None,
                 "subject_duration_frames": None,
                 "continuous frame sequences": [],
                 "best_seq_idx": None,
-                "masks_dir": str(track_dir),
-                "beat_ids": beat_ids,
+                "masks_dir": str(masks_root / subject_slug),
+                "beat_ids": sorted({bid for _, ids, _, _ in windows for bid in ids}),
             }
-        else:
-            seqs, best_idx = contiguous_durations(frames_list, tolerance=15)
-            entry = {
-                "Subject_frames_present": frames_list,
-                "subject_first_frame": min(frames_list),
-                "subject_last_frame": max(frames_list),
-                "subject_duration_frames": max(frames_list) - min(frames_list),
-                "continuous frame sequences": seqs,
-                "best_seq_idx": best_idx,
-                "masks_dir": str(track_dir),
-                "beat_ids": beat_ids,
-            }
+            continue
 
-        analysis_2d_for_decisions[instance_key] = entry
-        for beat_key_, _ in matching:
-            add_to_report({
-                f"{beat_key_}_{instance_key}_first_frame": entry["subject_first_frame"],
-                f"{beat_key_}_{instance_key}_last_frame": entry["subject_last_frame"],
-            })
+        for track_dir in dirs:
+            instance_key = track_dir.name
+            frames_list = sorted(frames_present(track_dir)[0])
+            frame_span = (frames_list[0], frames_list[-1]) if frames_list else None
+
+            matching = [
+                (beat_key_, beat_ids_)
+                for beat_key_, beat_ids_, start_frame, end_frame in windows
+                if frame_span is not None and start_frame <= frame_span[1] and frame_span[0] <= end_frame
+            ]
+            beat_ids = sorted({beat_id for _, ids in matching for beat_id in ids})
+            #fall back, think this is pointless
+            if not frames_list:
+                print(f"no masks for {instance_key}")
+                entry = {
+                    "Subject_frames_present": [],
+                    "subject_first_frame": None,
+                    "subject_last_frame": None,
+                    "subject_duration_frames": None,
+                    "continuous frame sequences": [],
+                    "best_seq_idx": None,
+                    "masks_dir": str(track_dir),
+                    "beat_ids": beat_ids,
+                }
+                #actual frames present
+            else:
+                seqs, best_idx = contiguous_durations(frames_list, tolerance=15)
+                entry = {
+                    "Subject_frames_present": frames_list,
+                    "subject_first_frame": min(frames_list),
+                    "subject_last_frame": max(frames_list),
+                    "subject_duration_frames": max(frames_list) - min(frames_list),
+                    "continuous frame sequences": seqs,
+                    "best_seq_idx": best_idx,
+                    "masks_dir": str(track_dir),
+                    "beat_ids": beat_ids,
+                }
+
+            analysis_2d_for_decisions[instance_key] = entry
+            for beat_key_, _ in matching:
+                add_to_report({
+                    f"{beat_key_}_{instance_key}_first_frame": entry["subject_first_frame"],
+                    f"{beat_key_}_{instance_key}_last_frame": entry["subject_last_frame"],
+                })
 
     return analysis_2d_for_decisions
 
 
-def analysis_2d_gemvsSAM(gem_person_targets=None, SAM_dets=None, match_results=None, tolerance=15):
-    """gem_person_id -> analysis_2d_for_decisions-shaped entry, built
-    directly from detections.csv: union every frame across all of a
-    person's matched track_ids (one to many -- separated beats can put
-    the same person in different spans, where track_id numbering
-    restarts, so several track_ids can legitimately belong to one
-    gem_person_id).
-
-    Returns GEM_SAM_matches, kept separate from analysis_2d_for_decisions
-    (analysis_2d_from_masks) on purpose: a track_id that hasn't been
-    matched to a gem_person_id here is still a tracked instance with real
-    mask data -- untagged is not the same as untracked, so that data must
-    not be dropped just because it's absent from this gem-id-keyed view."""
+def analysis_2d_gemvsSAM(analysis_2d_for_decisions, gem_person_targets=None, SAM_dets=None, match_results=None, tolerance=15):
+    """Mutates analysis_2d_for_decisions in place: each gem_person_id's raw
+    SAM track(s) (union of frames across all matched track_ids -- separated
+    beats can put the same person in different spans, where track_id
+    numbering restarts) get replaced by one merged entry keyed by
+    gem_person_id. A track matched to nothing is left as-is -- untagged is
+    not the same as untracked. Returns analysis_2d_for_decisions."""
     from Two2D.AX_gem_SAM_matcher import gem_person_targets_lookup, load_SAM_dets, match_gem_people_to_sam
     from A_Config import sam3_masks_dir
-
+    #auto or manual loading
     if gem_person_targets is None:
         from A_Config import source_video_path
-        from Two2D.B_video_processing import video_dims
-        _, _, fps = video_dims(source_video_path())
-        gem_person_targets = gem_person_targets_lookup(fps)
+        gem_person_targets = gem_person_targets_lookup(source_video_path())
     if SAM_dets is None:
         SAM_dets = load_SAM_dets()
     if match_results is None:
@@ -326,17 +344,16 @@ def analysis_2d_gemvsSAM(gem_person_targets=None, SAM_dets=None, match_results=N
     person_SAM_dets = [d for d in SAM_dets if d["subject"] == "person"]
     masks_root = sam3_masks_dir()
 
-    GEM_SAM_matches = {}
     for gem_person_id, track_ids in match_results.items():
         frames_present_set = sorted({
             int(float(d["frame_idx"])) for d in person_SAM_dets if int(d["track_id"]) in track_ids
         })
         beat_ids = gem_person_targets[gem_person_id]["beat_ids"]
         # track_id is the same number the mask folder is named with (person-<track_id>)
-        masks_dirs = sorted(str(masks_root / f"person-{n:02d}") for n in track_ids)
+        matched_masks_dirs = sorted(str(masks_root / f"person-{n:02d}") for n in track_ids)
 
-        if not frames_present_set:
-            GEM_SAM_matches[gem_person_id] = {
+        if not frames_present_set:#no matches in this beat - no entry
+            entry = {
                 "Subject_frames_present": [],
                 "subject_first_frame": None,
                 "subject_last_frame": None,
@@ -350,22 +367,25 @@ def analysis_2d_gemvsSAM(gem_person_targets=None, SAM_dets=None, match_results=N
                 f"{gem_person_id}_first_frame": None,
                 f"{gem_person_id}_last_frame": None,
             })
-            continue
+        else:# we have a match add it
+            seqs, best_idx = contiguous_durations(frames_present_set, tolerance)
+            entry = {
+                "Subject_frames_present": frames_present_set,
+                "subject_first_frame": min(frames_present_set),
+                "subject_last_frame": max(frames_present_set),
+                "subject_duration_frames": max(frames_present_set) - min(frames_present_set),
+                "continuous frame sequences": seqs,
+                "best_seq_idx": best_idx,
+                "masks_dirs": matched_masks_dirs,
+                "beat_ids": beat_ids,
+            }
+            add_to_report({
+                f"{gem_person_id}_first_frame": min(frames_present_set),
+                f"{gem_person_id}_last_frame": max(frames_present_set),
+            })
 
-        seqs, best_idx = contiguous_durations(frames_present_set, tolerance)
-        GEM_SAM_matches[gem_person_id] = {
-            "Subject_frames_present": frames_present_set,
-            "subject_first_frame": min(frames_present_set),
-            "subject_last_frame": max(frames_present_set),
-            "subject_duration_frames": max(frames_present_set) - min(frames_present_set),
-            "continuous frame sequences": seqs,
-            "best_seq_idx": best_idx,
-            "masks_dirs": masks_dirs,
-            "beat_ids": beat_ids,
-        }
-        add_to_report({
-            f"{gem_person_id}_first_frame": min(frames_present_set),
-            f"{gem_person_id}_last_frame": max(frames_present_set),
-        })
+        for d in matched_masks_dirs:
+            analysis_2d_for_decisions.pop(Path(d).name, None)#kill off the duplicated person
+        analysis_2d_for_decisions[gem_person_id] = entry#add gem
 
-    return GEM_SAM_matches
+    return analysis_2d_for_decisions

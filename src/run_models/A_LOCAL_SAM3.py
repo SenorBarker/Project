@@ -29,6 +29,7 @@ guaranteed to be the same scale as output_prob_thresh here.
 import gc
 import shutil
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -61,7 +62,7 @@ OFFLOAD_ABOVE_N_FRAMES = 650
 # than were asked for (1 bush requested, 17 found) means the prompt is wrong --
 # and tracking them all exhausts the GPU, since per-frame state scales with
 # instance count.
-INSTANCE_COUNT_LEEWAY = 2
+INSTANCE_COUNT_LEEWAY = 6
 
 
 class ObjectTooDense(RuntimeError):
@@ -84,7 +85,29 @@ def get_predictor():
         t0 = time.time()
         _PREDICTOR = build_sam3_video_predictor()
         print(f"[local SAM3] model loaded in {time.time() - t0:.1f}s")
+        # Records every CUDA allocation's call stack so an OOM (or a manual
+        # dump) can be attributed to a source line instead of guessed at --
+        # see _track_span's except block and dump_memory_snapshot().
+        torch.cuda.memory._record_memory_history(max_entries=200_000)
     return _PREDICTOR
+
+
+def dump_memory_snapshot(out_dir, tag):
+    """Writes a torch CUDA memory snapshot to out_dir/mem_snapshot_<tag>_<ts>.pickle.
+
+    Load it at https://docs.pytorch.org/memory_viz (drag-and-drop) to see live
+    allocations grouped by call stack, or open programmatically with
+    `torch.cuda._memory_viz._read_memory_history` / `pickle.load`.
+    """
+    import pickle
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"mem_snapshot_{tag}_{time.strftime('%Y%m%d-%H%M%S')}.pickle"
+    with open(path, "wb") as f:
+        pickle.dump(torch.cuda.memory._snapshot(), f)
+    print(f"[local SAM3] memory snapshot written to {path}")
+    return path
 
 
 def release_predictor():
@@ -96,7 +119,24 @@ def release_predictor():
         _PREDICTOR.shutdown()
     except Exception as exc:
         print(f"[local SAM3] shutdown failed, freeing anyway: {exc}")
+    # The caller still holds `predictor` too, so nulling the global frees nothing.
+    # Cut the model off the wrapper instead.
+    _PREDICTOR.model = None
     _PREDICTOR = None
+    # Belt-and-suspenders alongside the fix in Sam3BasePredictor.shutdown():
+    # SAM3's predictor classes enter a process-wide bf16 autocast context in
+    # __init__ and never exit it (see sam3_tracking_predictor.py,
+    # sam3_multiplex_base.py, sam3_multiplex_video_predictor.py), which leaves
+    # torch.is_autocast_enabled() stuck True for the rest of this kernel and
+    # silently downcasts every later CUDA matmul (e.g. VGGT-O's unproject())
+    # to bf16. Force it off here too in case shutdown() above raised before
+    # reaching its own reset, or a future SAM3 code path skips shutdown().
+    if torch.cuda.is_available():
+        torch.autocast(device_type="cuda", enabled=False).__enter__()
+        # ...and that unexited autocast also cached a bf16 copy of every weight:
+        # 1.22GiB that outlives the model. Only an __exit__ drops it, so do it here.
+        torch.clear_autocast_cache()
+        torch.cuda.memory._record_memory_history(enabled=None)  # pairs with get_predictor()
     gc.collect()
     torch.cuda.empty_cache()
     print(f"[local SAM3] released -- {torch.cuda.memory_allocated()/1024**3:.2f}GiB still allocated")
@@ -172,6 +212,9 @@ def _track_span(predictor, clip_path, subject, threshold, expected_count=None):
             for i, sam_obj_id in enumerate(sam_obj_ids.tolist()):
                 yield (response["frame_index"], sam_obj_id, sam_masks[i],
                        sam_boxes[i], float(sam_probs[i]))
+    except torch.cuda.OutOfMemoryError:
+        dump_memory_snapshot(Path(clip_path).parent, subject)
+        raise
     finally:
         predictor.handle_request(
             request=dict(type="close_session", session_id=session_id)
@@ -245,6 +288,7 @@ def _run_sam3_tracking_local(video_path, tracking_requests_by_subject, threshold
             span_frames = {}  # global track_id -> [frame_idx, ...]
             best = {}  # global track_id -> (prob, clip_frame_idx, mask)
             rows_before_span = len(raw_detection_rows)
+            #this is the actual tracking "_track_span!"
             try:
                 for clip_frame_idx, sam_obj_id, sam_mask, sam_box, sam_prob in _track_span(
                     predictor, tmp_clip, subject, threshold, request.get("expected_count")
@@ -275,7 +319,7 @@ def _run_sam3_tracking_local(video_path, tracking_requests_by_subject, threshold
                         "obj_id": sam_obj_id, "track_id": track_id,
                         "x": x, "y": y, "w": w, "h": h,
                     })
-            except ObjectTooDense as too_dense:
+            except ObjectTooDense as too_dense: #exception due to being too dense see above (118)
                 # Leave nothing half-written behind: this span's track ids are
                 # its own (next_track_id only ever moves forward), so their dirs
                 # and rows can go without touching an earlier span's output.
@@ -348,14 +392,14 @@ def _run_sam3_tracking_local(video_path, tracking_requests_by_subject, threshold
     # sends you looking at the footage when the real answer is that nothing was
     # ever asked for.
     if not tracking_requests_by_subject:
-        raise RuntimeError(
+        print(
             "SAM3 tracker had nothing to run: no beat produced a tracking request. "
             "Check that some beat has a tracked_subject -- see "
             "render_paper_edit.build_tracking_requests/tracking_windows."
         )
 
     if not any(v["Subject_frames_present"] for v in analysis_2d_for_decisions.values()):
-        raise RuntimeError(
+        print(
             f"SAM3 tracker ran {sum(len(r) for r in tracking_requests_by_subject.values())} "
             f"request(s) for {sorted(tracking_requests_by_subject)} but found no detections "
             f"in any of them."

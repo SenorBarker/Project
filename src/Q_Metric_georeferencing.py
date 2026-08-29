@@ -83,7 +83,7 @@ def GPS_camerapose_matcher(GPS_dict, cam_pos_dict, max_frame_gap=150):#150 is 5s
 
 
 
-def _speed_direction_single(positions_dict, fps):
+def _speed_direction_single(positions_dict, video_path, frame_times=None):
     #invented to run this separatly for each dict that is passed into the function below
     t = np.array(sorted(positions_dict.keys()))#time
     pos = np.array([positions_dict[k] for k in sorted(positions_dict.keys())])#position
@@ -94,8 +94,19 @@ def _speed_direction_single(positions_dict, fps):
         nan = np.full(len(t), np.nan)
         return t, nan, nan, nan
 
-    t_0 = t[:-2]
-    t_2 = t[2:]
+    # t's values are real frame numbers -- true elapsed seconds between two
+    # specific frames needs their real decoded timestamps, not a frame delta
+    # divided by an average fps (wrong on VFR sources, where the true local
+    # rate drifts from the average). frame_times, if given, is a batched
+    # lookup the caller already made across every subject; otherwise resolve
+    # it here for a standalone call.
+    if frame_times is None:
+        from Two2D.B_video_processing import frame_times_at_indices
+        frame_times = frame_times_at_indices(video_path, t)
+    t_seconds = np.array([frame_times[f] for f in t])
+
+    t_0 = t_seconds[:-2]
+    t_2 = t_seconds[2:]
 
     pos_0 = pos[:-2]
     pos_2 = pos[2:]
@@ -104,9 +115,7 @@ def _speed_direction_single(positions_dict, fps):
     delta_p = (pos_2 - pos_0) / 2
     heading = np.degrees(np.arctan2(delta_p[:, 0], delta_p[:, 2])) % 360 #East, North -- Up is irrelevant to heading
     delta_p = np.linalg.norm(delta_p, axis=1)
-    vel = delta_p / delta_t  #metres per frame
-    mps = vel * fps #metres/second
-    
+    mps = delta_p / delta_t  # delta_t is real elapsed seconds, so this is already metres/second
 
     kmh = mps /1000 * 60* 60 #km/h
 
@@ -117,7 +126,7 @@ def _speed_direction_single(positions_dict, fps):
     return t, mps, kmh, heading
 
 
-def speed_direction(positions_dicts, fps):
+def speed_direction(positions_dicts, fps=None, video_path=None):
     '''positions_dicts is one of:
       - a single time->position dict -> returns one (mps, kmh, heading) tuple
       - a sequence of them, labelled camera, subject, subject_2... -> returns
@@ -127,7 +136,12 @@ def speed_direction(positions_dicts, fps):
         instead of relying on the caller knowing the input dict's insertion order
     Each is run through the same speed/heading maths, then plotted together on
     shared axes. Saves the plots and appends to the report CSV for whichever case
-    is currently active (see A_Config.set_case).'''
+    is currently active (see A_Config.set_case).
+
+    fps is accepted but unused -- kept only so existing positional callers
+    (speed_direction(positions, fps)) don't break. Speed is computed from
+    real per-frame timestamps now, not fps arithmetic (inaccurate on VFR
+    sources); video_path defaults to the current case's source video.'''
     named = None
     if isinstance(positions_dicts, dict):
         first = next(iter(positions_dicts.values()), None)
@@ -141,9 +155,20 @@ def speed_direction(positions_dicts, fps):
     else:
         single = False
 
+    if video_path is None:
+        from A_Config import source_video_path
+        video_path = source_video_path()
+
     labels = named or (["camera", "subject"] + [f"subject_{i}" for i in range(2, len(positions_dicts))])
     colors = plt.cm.tab10(np.linspace(0, 1, 10))[:len(positions_dicts)]
-    results = [_speed_direction_single(pd_, fps) for pd_ in positions_dicts]
+
+    # One batched real-timestamp lookup across every subject's frame numbers,
+    # instead of a separate full-video pass (or frame/fps arithmetic) per subject.
+    from Two2D.B_video_processing import frame_times_at_indices
+    all_frames = sorted({f for pd_ in positions_dicts for f in pd_.keys()})
+    frame_times = frame_times_at_indices(video_path, all_frames) if all_frames else {}
+
+    results = [_speed_direction_single(pd_, video_path, frame_times=frame_times) for pd_ in positions_dicts]
 
     plt.figure()
     for (t, mps, kmh, heading), label, color in zip(results, labels, colors):
