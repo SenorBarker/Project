@@ -465,7 +465,10 @@ def find_mask_centroids_in_model_space(subject_recon,
             if world_points is None:
                 continue
             mask_points.append(world_points.cpu().numpy())
-        mask_points = np.concatenate(mask_points, axis=0)
+        # empty is a legitimate answer (masks all blank, or every frame unprojected to
+        # nothing) -- hand back an empty (0,3) cloud so the caller can fall back to a
+        # subject-free camera instead of dying on the concatenate.
+        mask_points = np.concatenate(mask_points, axis=0) if mask_points else np.empty((0, 3))
         return subject_centroids_model, frame_keys, depth_std_model, weight_sums_R, centrality_weights, mask_points
 
     #cetroids and the Zdepth standard deviation in model space, plus the frame keys

@@ -11,7 +11,12 @@ from Two2D.B_video_processing import frames_at_times, video_fps, _probe_format
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 from A_Config import asset_name , assets_dir
-
+VIDEO_WINDOWS = 1  # how many clips to split the coverage-sensitive queries into.
+# Asked about a 33-minute video whole, Flash answers for roughly the first half and
+# stops with finish_reason=STOP -- it is not truncated, it believes it has finished.
+# Clipping the part it receives is the only way to make "the rest of the video" not
+# exist. Applies to the summary and transcript; objects/places/people still see the
+# whole video via the cache.
 
 def get_box(det):
     """Model has been observed emitting either 'box_2d' or 'box' as the key --
@@ -68,6 +73,32 @@ MODEL = "gemini-3.5-flash"  # single source of truth: a cache is bound to the
 # the same") or a silent re-upload on every run.
 
 
+def _machine_json(raw, label):
+    """The JSON out of a response, however the model chose to wrap it.
+
+    The prompts ask for a <machine>...</machine> block and usually get one, but
+    the wrapper is the model's choice and it varies run to run -- the people
+    query came back fenced as ```json instead, and partitioning on "<machine>"
+    turned a perfectly good payload into an empty string and a JSONDecodeError
+    pointing at column 1. The content was never the problem, so all three
+    wrappings are accepted: the block, a fence, or bare JSON.
+
+    Returns (human_text, parsed). human_text is whatever preceded the JSON,
+    which some callers save alongside it."""
+    human_text, _, after = raw.partition("<machine>")
+    if after:
+        return human_text, json.loads(after.partition("</machine>")[0].strip())
+
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start == -1 or end <= start:
+        raise ValueError(
+            f"no JSON found in the {label} response; the raw text is saved "
+            f"next to the other outputs. It starts: {raw[:200]!r}"
+        )
+    return raw[:start], json.loads(raw[start:end + 1])
+
+
 def _deterministic_config(cache_name):
     """temperature=0 -- these calls feed a forensic/evidence pipeline and are
     treated as fact downstream, so re-running the same video must converge on
@@ -107,12 +138,7 @@ def _log_response_meta(response, label):
         print(f"[gemini-diag] {label}: failed to inspect response metadata: {e}")
 
 
-VIDEO_WINDOWS = 2  # how many clips to split the coverage-sensitive queries into.
-# Asked about a 33-minute video whole, Flash answers for roughly the first half and
-# stops with finish_reason=STOP -- it is not truncated, it believes it has finished.
-# Clipping the part it receives is the only way to make "the rest of the video" not
-# exist. Applies to the summary and transcript; objects/places/people still see the
-# whole video via the cache.
+
 
 
 def _mmss(seconds):
@@ -248,10 +274,12 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
 
     summary_text = _windowed_query(
         client, file_ref, duration_s,
-        #prompt="Give a detailed Summary of this clip. provide start and end times. "
-        #       "Intervals can be no coarser than 1 minute." + FORMAT_SUFFIX,
-        prompt="Give a detailed Summary of this clip "
-                      "Intervals can be no coarser than 10 seconds. provide start and end times each time" + FORMAT_SUFFIX,
+        prompt="Give a detailed Summary of this clip. Break it into moments: important events that have a clear narrative start and end. " \
+        "Every moment needs its own line with a start and stop time. When a moment starts, before you know what is happening note the start, Then when it " \
+        "ends, note the end. Once it ends, the next moment begins" 
+        "Keep moments together, but if nothing important is happening, summarisse in 30s intervals, but if a moment starts mid interval, START A NEW ONE." + FORMAT_SUFFIX,
+        #prompt="Give a detailed Summary of this clip "
+        #"Intervals can be no coarser than 10 seconds. provide start and end times each time" + FORMAT_SUFFIX,
                 
         label="summary",
         cache_name=cache_name,
@@ -308,9 +336,7 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
     # a fresh window for an immediate re-run, which is the common case in a notebook
     _extend_cache(client, cache_name)
     people_raw = people_response.text
-    _, _, people_machine_block = people_raw.partition("<machine>")
-    people_json_str = people_machine_block.partition("</machine>")[0].strip()
-    people = json.loads(people_json_str)["people"]
+    people = _machine_json(people_raw, "people")[1]["people"]
 
     # one debug overlay per appearance (not just per person) -- a person can
     # have multiple, possibly non-contiguous, appearance windows and every one
@@ -379,9 +405,8 @@ def query_from_description(operator_prompt, description_path, objects_path, case
     )
 
     raw = response.text
-    human_text, _, machine_block = raw.partition("<machine>")
-    json_str = machine_block.partition("</machine>")[0].strip() #converts the response to machine readable format
-    detections = json.loads(json_str)["detections"]
+    human_text, machine = _machine_json(raw, "detections")
+    detections = machine["detections"]
     #saving
     out_dir = case_dir / "012_Gemini_outputs"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -435,7 +460,7 @@ def gemini_query_CSV_cached(prompt, asset_name, CSV_path, query_dir, extend_ttl=
     response = client.models.generate_content(
         model="gemini-3.5-flash",
         contents=FORMAT_PREFIX + prompt,
-        config=types.GenerateContentConfig(cached_content=cache_name)
+        config=types.GenerateContentConfig(cached_content=cache_name, temperature=0)
     )
     print(response.text)
 

@@ -3,11 +3,13 @@ from A_Config import set_case, case_dir
 import json
 from pathlib import Path
 from B_video_processing import frame_times_at_indices
-from A_Config import set_case, source_video_path, source_dir
+from A_Config import set_case, source_video_path, source_dir, REPO_ROOT
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 BIN_S = 1.0 
-
+project_root = Path.cwd()
 #----------VS ME-------------ALIVE
 from B_video_processing import video_duration_sec
 
@@ -227,6 +229,70 @@ def random_baseline_blocks(GT_edit, paper_edit, n_draws=200, seed=0,
             pct    = float(np.mean(vals < actual[k]) * 100),   # where the real edit sits
         )
     return row, pd.DataFrame(stats).T.round(3)
+#--------------------------VIS
+TP_C, FP_C, FN_C, REF_C = "#1baf7a", "#e34948", "#c3c2b7", "#eb6834"
+
+ANON = {"George": "A1", "Tamara": "A2", "Vuk": "A3", "stefanos": "A4",
+        "ME (GT)": "Reference editor", "machine": "System"}
+
+
+
+def timeline_agreement(case_name, edges, tracks, GT_edit=None, votes=None, fname=None):
+    """One band per editor on a shared time axis. If GT_edit is given, every
+    track except the reference is coloured by agreement with it: green = kept
+    and in the reference, red = kept but not, grey = missed.
+    Pass votes=<curve> to add the panel vote histogram as a top panel."""
+    n = len(tracks)
+    has_votes = votes is not None
+
+    fig, axes = plt.subplots(n + has_votes, 1,
+                             figsize=(14, 1.2 + 0.45 * n + 1.5 * has_votes),
+                             sharex=True, squeeze=False,
+                             height_ratios=([3] if has_votes else []) + [1] * n,
+                             gridspec_kw=dict(hspace=0.15))
+    axes = axes[:, 0]
+
+    if has_votes:
+        axes[0].stairs(votes, edges, fill=True, color="#2a78d6")
+        axes[0].set_ylim(0, 1)
+        axes[0].set_ylabel("P(include)", fontsize=8)
+
+    track_axes = axes[has_votes:]
+    axes[0].set_title(case_name)
+
+    t = edges[:-1]
+    for ax, (label, mask) in zip(track_axes, tracks.items()):
+        if GT_edit is None or mask is GT_edit:
+            ax.fill_between(t, 0, 1, where=mask, step="post", color=REF_C)
+        else:
+            for m, c in [(mask & GT_edit,  TP_C),
+                         (mask & ~GT_edit, FP_C),
+                         (~mask & GT_edit, FN_C)]:
+                ax.fill_between(t, 0, 1, where=m, step="post", color=c)
+        ax.set_ylim(0, 1)
+        ax.set_yticks([])
+        ax.set_ylabel(ANON.get(label, label), rotation=0,
+                      ha="right", va="center", fontsize=8)
+
+    axes[-1].set_xlabel("time (s)")
+
+    if GT_edit is not None:
+        fig.legend(handles=[Patch(color=TP_C, label="In both edit and GT"),
+                            Patch(color=FP_C, label="In edit, not in GT"),
+                            Patch(color=FN_C, label="Missed")],
+                   loc="lower center", bbox_to_anchor=(0.5, -.1),
+                   ncol=3, fontsize=7, frameon=False)
+
+    if fname:
+        outdir = Path(REPO_ROOT) / "writing" / "Figures" / "sys_eval"
+        outdir.mkdir(parents=True, exist_ok=True)
+        fig.savefig(outdir / fname, dpi=200, bbox_inches="tight")
+        print(f"saved {outdir / fname}")
+    plt.show()
+
+
+    
+
 
 
 

@@ -46,7 +46,7 @@ You will receive 4 summaries from a VIT inside:
 `SOURCE MATERIAL`
   `DESCRIPTION` Rough time-coded description of the action. Source for subjects and events
   `OBJECTS` A list of important items and when the VIT says they they are visible
-  `AUDIO TRANSCRIPT` Timecoded and detailed transcript of every word spoken
+  `AUDIO TRANSCRIPT` Timecoded and detailed transcript of every word spoken. Format is start min:sec, end min:sec 02:26-02:27 
   `PLACES` Timecoded locations, helpful when deciding how to make a `3D_RECON` or `MAP` 
   `PEOPLE` Gemini's detected people : `gem_person_id` (stable
   identity, use this — never a free-text descriptor — when requesting tracking of
@@ -102,9 +102,9 @@ text. Concretely, you:
    substitute, citing why. Feasible-with-constraint (e.g. shorter recon than
    requested) → decide whether the constrained version still earns its beat
    under R5.1/R5.2, citing the rule, or flag `[JUDGMENT CALL]`.
-2. **Fold in newly-known facts.** If a metric that didn't exist at draft time
-   changes the story's strength (e.g. a precise meeting distance), revise the
-   relevant beat's content/rationale to use it.  
+2. **Fold in newly-known facts.** If a metric that didn't exist at draft time, or 
+   changes the story's strength (e.g. a precise meeting distance, subjects present), revise the
+   relevant beat's content/rationale to use it. If duration, or start or stop times need to change on `real` segments only, not `3D_RECON` or `MAP` or `PROJECTION_MAP`. You may move `search_window_start_seconds` / `search_window_end_seconds` and new perfect cut frames will be calculated immediately afterwards for you. Do not change`start_frame`/`end_frame`
 3. **Lock final numbers** — `duration_seconds` and ordering, once real
    quantities (span, location count) are known precisely.
 4. **Check auto-selected frame ranges**. Any beat you drafted with a search
@@ -113,7 +113,7 @@ text. Concretely, you:
    at all (no range → treat like an infeasible verdict, drop or substitute
    the beat). 2-and is it roughly the length you asked for (well short →
    decide whether the beat still earns its place, same as a
-   feasible-with-constraint verdict). 3-check if it clashes with other beats (exectue R1,8, R1.9). Do not chagne the cut point tomake them fit. merge them To merge: take the earlier start and later end frame.Concatenate all other fields; or: `archetype`: keep 1  "EVENT_ACTION"  > "EVENT_TRIGGER" > "AFTERMATH">"SOUNDBITE" >"ESTABLISHER";  `duration`: sum
+   feasible-with-constraint verdict). 3-check if it clashes with other beats (exectue R1,8, R1.9). Do not change the cut point tomake them fit. merge them To merge: take the earlier start and later end frame.Concatenate all other fields; or: `archetype`: keep 1  "EVENT_ACTION"  > "EVENT_TRIGGER" > "AFTERMATH">"SOUNDBITE" >"ESTABLISHER";  `duration`: sum
      
 
 Do not judge visual quality. If an asset exists, trust only its measured properties. If visual quality is unknown, flag [NEEDS VISUAL REVIEW].

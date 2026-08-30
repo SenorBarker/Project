@@ -587,6 +587,59 @@ def beat_key(beat: dict) -> str:
     return beat["beat_id"][0]
 
 
+def match_revision_beat_ids(revision_path=None, draft_path=None):
+    '''Force the revision's beat_ids back onto the draft's. beat_key (beat_id[0])
+    names every asset on disk, and those were built from the draft -- a beat the
+    Producer renamed but didn't re-window orphans them. Matched on the search window;
+    a beat whose window moved is genuinely new and is left alone. Rewrites the
+    revision in place.'''
+    revision_path = Path(revision_path or paper_edit_path(mode="revision"))
+    draft_path = Path(draft_path or paper_edit_path(mode="draft"))
+    rev = json.loads(revision_path.read_text(encoding="utf-8"))
+    draft = json.loads(draft_path.read_text(encoding="utf-8"))
+
+    def window(b):
+        return (b.get("search_window_start_seconds"), b.get("search_window_end_seconds"))
+
+    def identity(b):
+        '''What makes a beat that beat. The window alone does not: two beats
+        routinely share one -- 601's draft has MAP beat-05 and EVENT_ACTION
+        beat-06 both on (147, 169), because the same twenty seconds is both
+        the map shot and the action in it. Keyed on the window alone the
+        second overwrote the first, and the MAP beat came back renamed
+        beat-06, colliding with the beat that legitimately owned that key.'''
+        return (window(b), b.get("archetype"))
+
+    # Ambiguity is dropped rather than resolved arbitrarily. If a draft has two
+    # beats with the same window AND archetype there is nothing to tell them
+    # apart, and guessing is how the wrong beat gets renamed -- leaving the
+    # revision's own id alone is the recoverable failure.
+    draft_ids, ambiguous = {}, set()
+    for b in draft["beats"]:
+        if window(b) == (None, None):
+            continue
+        key = identity(b)
+        if key in draft_ids:
+            ambiguous.add(key)
+        draft_ids[key] = b["beat_id"]
+    for key in ambiguous:
+        del draft_ids[key]
+        print(f"ambiguous in the draft, left alone: window {key[0]} archetype {key[1]}")
+
+    changed = 0
+    for beat in rev["beats"]:
+        ids = draft_ids.get(identity(beat))
+        if ids and beat["beat_id"] != ids:
+            print(f"beat_id {beat['beat_id']} -> {ids} "
+                  f"(window {window(beat)} / {beat.get('archetype')} unchanged)")
+            beat["beat_id"] = list(ids)
+            changed += 1
+    if changed:
+        revision_path.write_text(json.dumps(rev, indent=2), encoding="utf-8")
+        print(f"{changed} beat_id(s) matched back to the draft in {revision_path.name}")
+    return rev
+
+
 def build_recon_requests(paper_edit_json_path=None, video_path=None) -> list[dict]:
     '''One entry per (beat, recon kind) the Producer asked for, in beat order.
 

@@ -16,7 +16,13 @@
       "Bash(python3 -c \"import json; json.load\\(open\\('/cs/student/project_msc/2025/cgvi/dbarker/src/AA_TROPEA_GPSTESTS.ipynb'\\)\\); print\\('valid json'\\)\")",
       "Bash(mount)",
       "Bash(timeout 6 df -h \"/workspaces/knuckles_drive/Data/07_Tropea_cafe/090_assets/\")",
-      "Bash(python3 -m py_compile src/F_transpose_to_recon_objects.py src/P_projection_mapping.py src/U_rendering.py src/F_post_recon_processing.py Experiments/templates/AA_cam_pose_sweeps.py)"
+      "Bash(python3 -m py_compile src/F_transpose_to_recon_objects.py src/P_projection_mapping.py src/U_rendering.py src/F_post_recon_processing.py Experiments/templates/AA_cam_pose_sweeps.py)",
+      "Read(//home/david/project/writing/**)",
+      "Read(//mnt/24B4E926B4E8FAE6/david/project/writing/**)",
+      "Bash(code --list-extensions)",
+      "Read(//home/david/**)",
+      "Bash(xargs -I{} sh -c 'echo ==={}===; cat {}')",
+      "Bash(grep -rniE \"no right answer|no correct answer|no single right|not.{0,10}right answer\" /mnt/24B4E926B4E8FAE6/david/project/ --include=\"*.py\" --include=\"*.tex\" --include=\"*.md\" --include=\"*.ipynb\")"
     ],
     "additionalDirectories": [
       "/tmp"

@@ -13,9 +13,9 @@ def gemini_final_report():
     event_descrption_prompt = (
             F" Read the CSV first, these are measurements "
             f"'''csv\n{csv_text}\n```\n\n"
-        f" The <<subject>> is the main focus, so base the report on this. Look for green highlights/masks and focus on those if you see them, explictly mention them."
+        f" The camera wearer and <<subject>>s are the main focus, so base the report on this. Look for green highlights/masks and focus on those if you see them, explictly mention them."
         f"give a 1 sentence exatablisher that gives location, time and date"
-        f" then give details on the <<subject>>"
+        f" then give details on the <<subject>>s"
         f"only mention objects the subject interacts with, or is near"
         f"only mention people that either ineract with, react to, or speak about the subject"
         F"mention who talks to or about the <<subject>>\n\n"

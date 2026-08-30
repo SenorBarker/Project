@@ -88,6 +88,7 @@ def _with_experiment(base):
 def source_dir(): return case_dir() / "010_source"
 def source_video_path(): return next(source_dir().glob("*.mp4"))
 def query_dir(): return case_dir() / "012_Gemini_outputs"
+def asr_dir(): return case_dir() / "013_ASR_outputs"
 def agent_p_output_dir(): return _with_experiment(case_dir() / "012_agent_p_output")
 def yolo_masks_dir(): return _with_experiment(case_dir() / "015_YOLO")
 def sam3_masks_dir(): return _with_experiment(case_dir() / "015_SAM3_masks")

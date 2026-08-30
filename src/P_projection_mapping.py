@@ -864,6 +864,55 @@ def projection_mapping_sequence(
 
 
 #---------------------autocam
+def mean_camera_extrinsic(extrinsics, weights=None, pull_back=0.0, dtype=None):
+    """FALLBACK auto camera for when subject tracking gave us nothing to aim at:
+    the average pose of the real cameras, no subject involved. Use this when the
+    masks are empty (no mask points, or every frame's weight is 0) so
+    auto_camera_position/subject_oriented_box/solve_auto_camera_extrinsic can't run
+    -- the shot still gets made, just framed on "where the shoot was pointed"
+    instead of on the subject.
+
+    extrinsics: (N,3,4) model-to-cam, i.e. recon.preds["extrinsic"] as numpy.
+    weights: optional (N,) per-frame weights (e.g. mask centrality). Frames with
+        weight 0 are dropped; None or an all-zero vector falls back to every frame
+        weighted equally -- which is the whole point of this function.
+    pull_back: extra distance to retreat along the mean camera's own forward axis
+        (same units as the model), to widen the average shot a bit.
+
+    Returns a (3,4) torch tensor on DEVICE, same convention/type as
+    solve_auto_camera_extrinsic, ready for projection_mapping_sequence(new_view=...).
+    """
+    extrinsics = np.asarray(extrinsics, dtype=np.float64).reshape(-1, 3, 4)
+    if extrinsics.shape[0] == 0:
+        raise ValueError("mean_camera_extrinsic: no extrinsics to average.")
+    w = np.ones(extrinsics.shape[0]) if weights is None else np.asarray(weights, dtype=np.float64).ravel()
+    if w.shape[0] != extrinsics.shape[0] or not np.any(w > 0):
+        w = np.ones(extrinsics.shape[0])
+    valid = w > 0
+    R_w2c_all = extrinsics[valid, :3, :3]
+    t_all = extrinsics[valid, :3, 3]
+    w = w[valid]
+
+    # centre: weighted mean of C = -R^T @ t, same as auto_camera_position
+    centres = -np.einsum("nij,nj->ni", np.transpose(R_w2c_all, (0, 2, 1)), t_all)
+    C = (centres * w[:, None]).sum(axis=0) / w.sum()
+
+    # rotation: weighted mean of the camera-to-model rotations, projected back onto
+    # SO(3) via SVD -- averaging matrices elementwise doesn't stay orthonormal.
+    R_c2w_mean = (np.transpose(R_w2c_all, (0, 2, 1)) * w[:, None, None]).sum(axis=0) / w.sum()
+    U, _, Vt = np.linalg.svd(R_c2w_mean)
+    R_c2w = U @ Vt
+    if np.linalg.det(R_c2w) < 0:            # guard the reflection case
+        U[:, -1] *= -1
+        R_c2w = U @ Vt
+
+    C = C - pull_back * R_c2w[:, 2]         # retreat along the mean forward axis
+    R_w2c = R_c2w.T
+    new_view_np = np.concatenate([R_w2c, (-R_w2c @ C)[:, None]], axis=1)   # (3,4)
+    dtype = dtype or torch.float32
+    return torch.as_tensor(new_view_np, dtype=dtype, device=DEVICE)
+
+
 def solve_auto_camera_extrinsic(points, target, R_c2w, intrinsic, image_hw,
                                  extra_distance_margin=0.0, dtype=None):
     """Translation-only solve for an auto camera: rotation R_c2w and intrinsic are
