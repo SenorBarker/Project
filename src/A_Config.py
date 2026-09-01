@@ -48,6 +48,8 @@ def set_case(case_name, experiment=None):
 
 def case_name(): return _CASE_NAME
 
+def experiment(): return _EXPERIMENT
+
 def set_pass(n):
     """Bump this in the notebook each time you hand the Producer feedback.
     Every paper-edit/draft file written after that gets '-{n}' on its name,

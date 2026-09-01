@@ -3,7 +3,7 @@ from A_Config import set_case, case_dir
 import json
 from pathlib import Path
 from B_video_processing import frame_times_at_indices
-from A_Config import set_case, source_video_path, source_dir, REPO_ROOT
+from A_Config import set_case, source_video_path, source_dir, REPO_ROOT, agent_p_output_dir
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -56,6 +56,22 @@ def cut_csv_to_timegrid(csv_path, edges):
     return spans_to_mask(spans, edges)
 
 
+def GT_cut_path(case_name):
+    """Always Data/<case>/100_labels/<case>_cuts.csv -- fixed convention,
+    no per-case exceptions."""
+    set_case(case_name)
+    return case_dir() / "100_labels" / f"{case_name}_cuts.csv"
+
+
+def resolve_GT_edit(case_name, edges):
+    """This case's reference cut as a mask, or None if it hasn't been cut yet --
+    a lookup by case_name alone, no path to type out per case."""
+    path = GT_cut_path(case_name)
+    if not path.exists():
+        return None
+    return cut_csv_to_timegrid(path, edges)
+
+
 def paper_edit_to_timegrid(paper_edit_json_path, case_name, edges):
     """Paper edit -> per-second kept/not, on the same grid as the vote curve.
     Beat bounds are frame indices, converted via each frame's own decoded
@@ -81,11 +97,181 @@ def paper_edit_to_timegrid(paper_edit_json_path, case_name, edges):
     return spans_to_mask(spans, edges)
 
 
+def paper_edit_path(case_name, experiment):
+    """Always Data/<case>/012_agent_p_output/<experiment>/<case>_<experiment>_1_revision.json.
+    Not guaranteed for every run (drafts, feedback passes etc. use other
+    suffixes) but this is the convention the eval notebooks target."""
+    set_case(case_name, experiment)
+    return agent_p_output_dir() / f"{case_name}_{experiment}_1_revision.json"
 
-def annotator_beats_to_grid(label, edges):
-    """One annotator's own selection, as a kept/not mask."""
-    spans = [(b["start_sec"], b["end_sec"]) for b in label["beats"]]
-    return spans_to_mask(spans, edges)
+
+def resolve_paper_edit(case_name, experiment, edges):
+    """The machine's cut for case_name/experiment as a mask, or None if that
+    run hasn't produced a revision yet -- a lookup by (case, experiment),
+    no path to type out per case."""
+    path = paper_edit_path(case_name, experiment)
+    if not path.exists():
+        return None
+    return paper_edit_to_timegrid(path, case_name, edges)
+
+
+
+_CRITICAL_REGISTRY = {}  # id(full mask) -> that annotator's critical-only mask,
+# so timeline_agreement can auto-hatch critical beats without the caller having
+# to build or pass a second track for it.
+
+
+def critical_union(labels, edges):
+    """Every second any annotator flagged critical, overlaps merged so a second
+    two annotators both marked critical is counted once. This is the denominator
+    for "did we catch the critical moments" -- how much critical material exists
+    at all, not how many critical beats were written."""
+    n = len(edges) - 1
+    union = np.zeros(n, dtype=bool)
+    for l in labels:
+        union |= annotator_beats_to_grid(l, edges, event_category="critical")
+    return union
+
+
+def critical_beats_hit(labels, edges, **edits):
+    """Whole critical BEATS hit, not seconds. Denominator is every critical beat
+    any annotator wrote, one count per beat -- two annotators each flagging
+    their own overlapping beat critical counts as 2 votes here, unlike
+    critical_union which would merge that overlap into one span. This is 'how
+    many of the critical calls did each editor's cut land inside', not 'how
+    much critical runtime did it cover'."""
+    bin_s = edges[1] - edges[0]
+    n = len(edges) - 1
+    crit_beats = [(b["start_sec"], b["end_sec"]) for l in labels for b in l["beats"]
+                 if b.get("event_category") == "critical"]
+    total = len(crit_beats)
+
+    rows = []
+    for name, mask in edits.items():
+        hit = 0
+        for s, e in crit_beats:
+            i0 = max(0, int(np.floor(s / bin_s)))
+            i1 = min(n, max(i0 + 1, int(np.ceil(e / bin_s))))
+            if mask[i0:i1].any():          # any overlap counts as a hit
+                hit += 1
+        rows.append({
+            "editor": name,
+            "Critical beats hit": hit,
+            "Critical beats voted": total,
+            "Crit beat rate": hit / total if total else np.nan,
+        })
+    return pd.DataFrame(rows)
+
+
+def critical_beats_hit_all_cases(case_experiments):
+    """critical_beats_hit summed across every case into one row per editor
+    (GT, machine) -- total critical beats hit vs total voted, not broken out
+    per case. Cases missing a GT cut or that experiment's revision are skipped
+    and reported, exactly as critical_hit_tally_all_cases does."""
+    hits, totals = {}, {}
+    for case, experiment in case_experiments.items():
+        set_case(case)
+        try:
+            labels = load_labels()
+        except FileNotFoundError as e:
+            print(f"{case}: skipped, {e}")
+            continue
+        edges = time_grid(case, labels=labels)
+
+        GT = resolve_GT_edit(case, edges)
+        if GT is None:
+            print(f"{case}: skipped, no GT cut at {GT_cut_path(case)}")
+            continue
+        machine = resolve_paper_edit(case, experiment, edges)
+        if machine is None:
+            print(f"{case}/{experiment}: skipped, no revision at {paper_edit_path(case, experiment)}")
+            continue
+
+        df = critical_beats_hit(labels, edges, GT=GT, machine=machine)
+        voted = int(df["Critical beats voted"].iloc[0])
+        gt_hit = int(df.loc[df.editor == "GT", "Critical beats hit"].iloc[0])
+        m_hit = int(df.loc[df.editor == "machine", "Critical beats hit"].iloc[0])
+        print(f"{case:24s} exp={experiment:16s} voted={voted:3d} GT={gt_hit:3d} machine={m_hit:3d}")
+        for _, row in df.iterrows():
+            hits[row["editor"]] = hits.get(row["editor"], 0) + row["Critical beats hit"]
+            totals[row["editor"]] = totals.get(row["editor"], 0) + row["Critical beats voted"]
+
+    return pd.DataFrame([
+        {"editor": e, "Critical beats hit": hits[e], "Critical beats voted": totals[e],
+         "Crit beat rate": hits[e] / totals[e] if totals[e] else np.nan}
+        for e in hits
+    ])
+
+
+def critical_hit_tally(labels, edges, **edits):
+    """Coverage of the critical union by each of `edits` (name=mask, e.g.
+    GT_edit=GT_edit, machine=machine_paper_edit). Returns a DataFrame:
+    "Critical hits (s)" seconds of that editor's cut inside the critical union,
+    "Vote critical (s)" the total critical seconds any annotator flagged (same
+    for every row -- the denominator), "Crit rate" the fraction covered."""
+    crit = critical_union(labels, edges)
+    total_s = float(crit.sum() * BIN_S)
+    rows = []
+    for name, mask in edits.items():
+        hit_s = float((mask & crit).sum() * BIN_S)
+        rows.append({
+            "editor": name,
+            "Critical hits (s)": hit_s,
+            "Vote critical (s)": total_s,
+            "Crit rate": hit_s / total_s if total_s else np.nan,
+        })
+    return pd.DataFrame(rows)
+
+
+def critical_hit_tally_all_cases(case_experiments):
+    """critical_hit_tally run across every case, stacked into one table.
+
+    case_experiments: {case_name: experiment} -- e.g. {"402_Hide_n_seek":
+    "Pipe_eval_01"}. Both the GT cut and the machine's paper edit are looked
+    up by (case, experiment) alone via resolve_GT_edit / resolve_paper_edit --
+    nothing to load or path out by hand. A case missing its GT cut or that
+    experiment's revision on disk is skipped and reported, not a crash."""
+    rows = []
+    for case, experiment in case_experiments.items():
+        set_case(case)
+        try:
+            labels = load_labels()
+        except FileNotFoundError as e:
+            print(f"{case}: skipped, {e}")
+            continue
+        edges = time_grid(case, labels=labels)
+
+        GT = resolve_GT_edit(case, edges)
+        if GT is None:
+            print(f"{case}: skipped, no GT cut at {GT_cut_path(case)}")
+            continue
+        machine = resolve_paper_edit(case, experiment, edges)
+        if machine is None:
+            print(f"{case}/{experiment}: skipped, no revision at {paper_edit_path(case, experiment)}")
+            continue
+
+        df = critical_hit_tally(labels, edges, GT=GT, machine=machine)
+        df.insert(0, "experiment", experiment)
+        df.insert(0, "case", case)
+        rows.append(df)
+    return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
+
+
+def annotator_beats_to_grid(label, edges, event_category=None):
+    """One annotator's own selection, as a kept/not mask.
+    Pass event_category="critical" (etc.) to keep only beats of that type.
+    On an unfiltered call, also registers that annotator's critical-only mask
+    against this mask's id() -- timeline_agreement picks it up automatically."""
+    spans = [(b["start_sec"], b["end_sec"]) for b in label["beats"]
+             if event_category is None or b.get("event_category") == event_category]
+    mask = spans_to_mask(spans, edges)
+    if event_category is None:
+        crit_spans = [(b["start_sec"], b["end_sec"]) for b in label["beats"]
+                     if b.get("event_category") == "critical"]
+        crit_mask = spans_to_mask(crit_spans, edges)
+        if crit_mask.any():
+            _CRITICAL_REGISTRY[id(mask)] = crit_mask
+    return mask
 
 
 
@@ -195,14 +381,18 @@ def random_baseline_closed_form(GT_edit, paper_edit):
 def random_baseline_blocks(GT_edit, paper_edit, n_draws=200, seed=0,
                            report=("iou", "soft_f1", "precision", "recall", "specificity")):
     """Null that keeps the editor's own segment count and lengths, placed at random.
-    Returns the mean baseline row plus, for each reported measure, the 5th/95th
-    percentile of the null and where the real edit sits inside it."""
+    Returns (row, stats, density): the mean baseline row; for each reported
+    measure, the 5th/95th percentile of the null and where the real edit sits
+    inside it; and density, the per-second fraction of the 200 draws that kept
+    that second — for plotting as a track alongside the real edits (it should
+    come out as a near-uniform wash, unlike every real editor's hard bands)."""
     rng = np.random.default_rng(seed)
     n = len(paper_edit)
     d = np.diff(np.concatenate(([0], paper_edit.view(np.int8), [0])))
     lens = np.flatnonzero(d == -1) - np.flatnonzero(d == 1)
 
     draws = []
+    density = np.zeros(n)
     for _ in range(n_draws):
         m = np.zeros(n, dtype=bool)
         for L in sorted(rng.permutation(lens), reverse=True):   # longest first
@@ -211,7 +401,9 @@ def random_baseline_blocks(GT_edit, paper_edit, n_draws=200, seed=0,
                 if not m[i:i + L].any():
                     m[i:i + L] = True
                     break
+        density += m
         draws.append(score_paper_vs_GT_edits(GT_edit, m))
+    density /= n_draws
 
     actual = score_paper_vs_GT_edits(GT_edit, paper_edit)
     num_keys = [k for k, v in draws[0].items() if isinstance(v, (int, float))]
@@ -228,20 +420,50 @@ def random_baseline_blocks(GT_edit, paper_edit, n_draws=200, seed=0,
             p95    = float(np.nanpercentile(vals, 95)),
             pct    = float(np.mean(vals < actual[k]) * 100),   # where the real edit sits
         )
-    return row, pd.DataFrame(stats).T.round(3)
+    return row, pd.DataFrame(stats).T.round(3), density
 #--------------------------VIS
-TP_C, FP_C, FN_C, REF_C = "#1baf7a", "#e34948", "#c3c2b7", "#eb6834"
+TP_C, FP_C, FN_C, REF_C, TN_C = "#1baf7a", "#e34948", "#c3c2b7", "#eb6834", "#fcfcfb"
+
+
+def _hex_to_rgb(h):
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
+
+
+def _row_image(mask, GT_edit=None, ref_color=None):
+    """One row as an (1, n, 3) RGB array, one solid pixel per second -- no
+    polygon edges between adjacent bins, so there is nothing for a rendering
+    seam to appear between, unlike stacking several fill_between calls."""
+    n = len(mask)
+    img = np.empty((1, n, 3))
+    if ref_color is not None:
+        img[0, mask] = _hex_to_rgb(ref_color)
+        img[0, ~mask] = _hex_to_rgb(TN_C)
+    else:
+        img[0, mask & GT_edit]  = _hex_to_rgb(TP_C)
+        img[0, mask & ~GT_edit] = _hex_to_rgb(FP_C)
+        img[0, ~mask & GT_edit] = _hex_to_rgb(FN_C)
+        img[0, ~mask & ~GT_edit] = _hex_to_rgb(TN_C)
+    return img
 
 ANON = {"George": "A1", "Tamara": "A2", "Vuk": "A3", "stefanos": "A4",
         "ME (GT)": "Reference editor", "machine": "System"}
 
 
 
-def timeline_agreement(case_name, edges, tracks, GT_edit=None, votes=None, fname=None):
+def timeline_agreement(case_name, edges, tracks, GT_edit=None, votes=None,
+                       hatch=None, fname=None):
     """One band per editor on a shared time axis. If GT_edit is given, every
-    track except the reference is coloured by agreement with it: green = kept
-    and in the reference, red = kept but not, grey = missed.
-    Pass votes=<curve> to add the panel vote histogram as a top panel."""
+    boolean track except the reference is coloured by agreement with it: green
+    = kept and in the reference, red = kept but not, grey = missed.
+    Pass votes=<curve> to add the panel vote histogram as a top panel.
+    A track may also be a float array in [0, 1] (e.g. random_baseline_blocks'
+    density) -- drawn as a greyscale wash instead of a hard band, so a null with
+    no real structure reads visually distinct from every real editor.
+    hatch: optional {label: mask} to add or override which seconds get
+    hatched. Every annotator track already hatches its own critical beats
+    automatically (registered by annotator_beats_to_grid) -- nothing needs
+    passing here for that; this is only for extra/custom hatches."""
     n = len(tracks)
     has_votes = votes is not None
 
@@ -261,14 +483,25 @@ def timeline_agreement(case_name, edges, tracks, GT_edit=None, votes=None, fname
     axes[0].set_title(case_name)
 
     t = edges[:-1]
+    has_hatch = False
     for ax, (label, mask) in zip(track_axes, tracks.items()):
-        if GT_edit is None or mask is GT_edit:
-            ax.fill_between(t, 0, 1, where=mask, step="post", color=REF_C)
+        if mask.dtype != bool:                                   # density row
+            ax.imshow(mask[None, :], aspect="auto", cmap="Greys", vmin=0, vmax=1,
+                      extent=[edges[0], edges[-1], 0, 1], interpolation="nearest")
+        elif GT_edit is None or mask is GT_edit:
+            ax.imshow(_row_image(mask, ref_color=REF_C), aspect="auto",
+                      extent=[edges[0], edges[-1], 0, 1], interpolation="nearest")
         else:
-            for m, c in [(mask & GT_edit,  TP_C),
-                         (mask & ~GT_edit, FP_C),
-                         (~mask & GT_edit, FN_C)]:
-                ax.fill_between(t, 0, 1, where=m, step="post", color=c)
+            ax.imshow(_row_image(mask, GT_edit=GT_edit), aspect="auto",
+                      extent=[edges[0], edges[-1], 0, 1], interpolation="nearest")
+        crit_mask = (hatch or {}).get(label)
+        if crit_mask is None and mask.dtype == bool:
+            crit_mask = _CRITICAL_REGISTRY.get(id(mask))
+        if crit_mask is not None and crit_mask.any():
+            ax.fill_between(t, 0, 1, where=crit_mask, step="post",
+                            facecolor="none", edgecolor="black",
+                            hatch="///", linewidth=0, antialiased=False)
+            has_hatch = True
         ax.set_ylim(0, 1)
         ax.set_yticks([])
         ax.set_ylabel(ANON.get(label, label), rotation=0,
@@ -276,10 +509,16 @@ def timeline_agreement(case_name, edges, tracks, GT_edit=None, votes=None, fname
 
     axes[-1].set_xlabel("time (s)")
 
+    legend_handles = []
     if GT_edit is not None:
-        fig.legend(handles=[Patch(color=TP_C, label="In both edit and GT"),
-                            Patch(color=FP_C, label="In edit, not in GT"),
-                            Patch(color=FN_C, label="Missed")],
+        legend_handles += [Patch(color=TP_C, label="In both edit and GT"),
+                          Patch(color=FP_C, label="In edit, not in GT"),
+                          Patch(color=FN_C, label="Missed")]
+    if has_hatch:
+        legend_handles.append(Patch(facecolor="none", edgecolor="black",
+                                    hatch="///", label="Marked critical"))
+    if legend_handles:
+        fig.legend(handles=legend_handles,
                    loc="lower center", bbox_to_anchor=(0.5, -.1),
                    ncol=3, fontsize=7, frameon=False)
 

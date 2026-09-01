@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 import json
+import re
 import dotenv
 import cv2
 
@@ -42,30 +43,68 @@ def draw_point_overlay(dets, native_frame, out_path):
 
 
 PEOPLE_SUFFIX = """
-Reply with ONLY the <machine> block below and nothing else -- no prose, no
-preamble, no written account of the video. The prose is never saved by the
-pipeline, and generating it spends the output-token budget the JSON needs:
-a long enough prose answer is truncated before the block is ever reached,
-leaving nothing to parse.
-Emit exactly this JSON:
-<machine>
-{"people": [{"person_id": "...", "descriptor": "...", "appearances": [{"start_s": 0, "end_s": 0, "box_2d": [0, 0, 0, 0]}]}]}
-</machine>
 Give every distinct person who appears anywhere in the video a stable person_id
 (Starting "person-A", "person-B") -- the same person must keep the same person_id
 across every appearance, even in separate, non-contiguous time windows. "descriptor"
 is a short human-readable description (distinguishing features: appearance, hair, skin, clothing, position, role) to help a human
-tell people apart. Each frame, ask: 'Is there someone here?' 
-Then 'Is this person the same as an existing one?' 
-If new, create a new person_id and add an entry to "appearances" with the time window 
-(start_s integer seconds). If a person stops being present, then add an entry to "appearances" with the time window 
-(end_s integer seconds). If the person reappears later, add a new entry to "appearances", for the CORRECT person, 
-with the new time  (start_s). If you get to the end of the video and a person is still present, 
+tell people apart. Each frame, ask: 'Is there someone here?'
+Then 'Is this person the same as an existing one?'
+If new, create a new person_id and add an entry to "appearances" with the time window
+(start_s integer seconds). If a person stops being present, then add an entry to "appearances" with the time window
+(end_s integer seconds). If the person reappears later, add a new entry to "appearances", for the CORRECT person,
+with the new time  (start_s). If you get to the end of the video and a person is still present,
 add an entry to "appearances" with the time window (end_s) as the last second of the video.
-For each appearance start_s also give "box_2d": that person's 2D bounding box (normalized 0-1000,
-[y0,x0,y1,x1]). Box only, no mask.
 """
 
+
+# The shape the people query must return. Enforced by the API via
+# response_schema rather than asked for in prose: three runs on the same
+# 12-minute bodycam gave an empty response, a truncated <machine> block, and a
+# numbered prose list -- none of them parseable. A schema removes the wrapper,
+# the stray keys the model invented ("text" per appearance), and the prose that
+# was eating the token budget before the JSON was reached.
+#
+# box_2d is deliberately absent: the only consumer was AX_gem_SAM_matcher's
+# box-IoU matching, superseded by AY_claude_crop_matcher working on crops and
+# descriptors. Re-add it to the appearance properties if that path comes back.
+PEOPLE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "people": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "person_id":  {"type": "string"},
+                    "descriptor": {"type": "string"},
+                    "appearances": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "start_s": {"type": "integer"},
+                                "end_s":   {"type": "integer"},
+                            },
+                            "required": ["start_s", "end_s"],
+                        },
+                    },
+                },
+                "required": ["person_id", "descriptor", "appearances"],
+            },
+        }
+    },
+    "required": ["people"],
+}
+
+
+MERGE_GAP_S = 6  # appearances of the same person separated by less than this are
+# one presence: the gap is the camera moving, not the person leaving. On 201 this
+# takes 138 raw appearances to 75; 3s leaves 103, 10s collapses to 39 and starts
+# swallowing real re-entries.
+
+PEOPLE_MAX_TOKENS = 32768  # a busy 12-minute bodycam produced ~4.7KB of people
+# JSON and was cut off mid-array; the default budget is also shared with thinking
+# tokens, so leaving it unset is what turns "too many people" into a JSONDecodeError.
 
 MODEL = "gemini-3.5-flash"  # single source of truth: a cache is bound to the
 # model that created it, so a stray second model id here means either a 400
@@ -99,12 +138,21 @@ def _machine_json(raw, label):
     return raw[:start], json.loads(raw[start:end + 1])
 
 
-def _deterministic_config(cache_name):
+def _deterministic_config(cache_name, max_output_tokens=None):
     """temperature=0 -- these calls feed a forensic/evidence pipeline and are
     treated as fact downstream, so re-running the same video must converge on
     the same answer instead of resampling a different (possibly incomplete)
-    account each time."""
-    return types.GenerateContentConfig(cached_content=cache_name, temperature=0)
+    account each time.
+
+    max_output_tokens is worth setting on the structured queries: left at the
+    default, a busy video's people JSON is cut off mid-array and the <machine>
+    block never closes, which surfaces as a JSONDecodeError in _machine_json
+    rather than as the truncation it actually is."""
+    return types.GenerateContentConfig(
+        cached_content=cache_name,
+        temperature=0,
+        max_output_tokens=max_output_tokens,
+    )
 
 
 def _extend_cache(client, cache_name, ttl="600s"):
@@ -192,10 +240,13 @@ def _windowed_query(client, file_ref, duration_s, prompt, label,
     return "\n\n".join(out)
 
 
-def gemini_vid_to_text(video_path, case_name, query_dir):
-    """Get Gemini's summary/objects/transcript/places/people for a video. Reuses the
-    remote cache from a previous call if it's still live (checked via
-    caches.get); otherwise uploads the video and creates a fresh cache."""
+def _open_session(video_path, case_name, query_dir):
+    """Client, live cache and uploaded file handle for a case, reusing whatever is
+    still valid on disk (cache 10 min, upload 48h) and only paying for an upload or
+    a re-cache when it has to. Split out of gemini_vid_to_text so a single pass --
+    people, say -- can be re-run on its own without repeating the other queries.
+
+    Returns (client, cache_name, file_ref)."""
     client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
 
     cache_name_path = query_dir / f"{case_name}_cache.txt"
@@ -255,6 +306,160 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
         query_dir.mkdir(parents=True, exist_ok=True)
         cache_name_path.write_text(cache_name)#store path to cached video
 
+    return client, cache_name, file_ref
+
+
+def gemini_people(video_path=None, case_name=None, query_dir=None):
+    """The people pass on its own, so the prompt can be iterated without
+    re-running summary/objects/transcript/places. Reuses the cache and upload
+    gemini_vid_to_text left behind, so a re-run is one query.
+
+    Zero-argument callable: anything not passed is resolved from A_Config."""
+    from A_Config import case_name as cfg_case_name, query_dir as cfg_query_dir, source_video_path
+    video_path = video_path if video_path is not None else source_video_path()
+    case_name = case_name if case_name is not None else cfg_case_name()
+    query_dir = query_dir if query_dir is not None else cfg_query_dir()
+    query_dir.mkdir(parents=True, exist_ok=True)
+
+    client, cache_name, _ = _open_session(video_path, case_name, query_dir)
+
+    people_response = client.models.generate_content(
+        model=MODEL,
+        contents="Describe every distinct person visible in this video." + PEOPLE_SUFFIX,
+        config=types.GenerateContentConfig(
+            cached_content=cache_name,
+            temperature=0,
+            max_output_tokens=PEOPLE_MAX_TOKENS,
+            # the API guarantees the shape, so there is no wrapper to strip and
+            # no prose to spend the token budget on -- see PEOPLE_SCHEMA
+            response_mime_type="application/json",
+            response_schema=PEOPLE_SCHEMA,
+        ),
+    )
+    print(people_response.text, flush=True)
+    _log_response_meta(people_response, "people")
+    # saved before the parse, so a response that won't parse is still on disk to
+    # look at instead of being lost with the traceback
+    (query_dir / f"{case_name}_people_raw.txt").write_text(people_response.text or "")
+    # last query of the run, but still worth extending -- it leaves the cache with
+    # a fresh window for an immediate re-run, which is the common case in a notebook
+    _extend_cache(client, cache_name)
+    people = json.loads(people_response.text)["people"]
+    n_raw = sum(len(p["appearances"]) for p in people)
+
+    # Merged here rather than left to the caller: the model closes an appearance
+    # every time someone leaves frame, and on a bodycam that is the officer
+    # turning his head, not the person going anywhere. 201 came back with 138
+    # appearances across 8 people for what is mostly one bedroom.
+    people = merge_appearances(people, max_gap_s=MERGE_GAP_S)
+
+    # The per-appearance box overlays that used to be drawn here are gone with
+    # box_2d itself -- AY_claude_crop_matcher identifies people from SAM crops
+    # against these descriptors, so there is no box to eyeball any more.
+    print(f"[gemini-diag] people: {len(people)} people, "
+          f"{sum(len(p['appearances']) for p in people)} appearances "
+          f"({n_raw} before merging gaps <= {MERGE_GAP_S}s)", flush=True)
+
+    out = query_dir / f"{case_name}_people.json"
+    out.write_text(json.dumps(people, indent=2))
+    print(f"[gemini-diag] saved {out.name}", flush=True)
+    return people
+
+
+_PLACES_LINE = re.compile(
+    r"\*\*(\d+):(\d\d)\s*-\s*(\d+):(\d\d)\*\*\s*:\s*(\S+)\s+(.+?)\s*$")
+
+
+def load_places(case_name=None, query_dir=None):
+    """places.txt -> [{start_s, end_s, category, location}], in time order.
+
+    Written as '**MM:SS - MM:SS** : category location' -- a line that doesn't
+    match is skipped rather than raising, since the file is also read by eye."""
+    from A_Config import case_name as cfg_case_name, query_dir as cfg_query_dir
+    case_name = case_name if case_name is not None else cfg_case_name()
+    query_dir = query_dir if query_dir is not None else cfg_query_dir()
+
+    places = []
+    for line in (query_dir / f"{case_name}_places.txt").read_text().splitlines():
+        m = _PLACES_LINE.match(line.strip())
+        if not m:
+            continue
+        h0, m0, h1, m1, category, location = m.groups()
+        places.append({"start_s": int(h0) * 60 + int(m0),
+                       "end_s":   int(h1) * 60 + int(m1),
+                       "category": category,
+                       "location": location})
+    return sorted(places, key=lambda p: p["start_s"])
+
+
+def place_at(t_s, places):
+    """The location active at t_s, or None if no window covers it."""
+    for p in places:
+        if p["start_s"] <= t_s <= p["end_s"]:
+            return f"{p['category']} {p['location']}"
+    return None
+
+
+def merge_appearances(people, places=None, max_gap_s=3):
+    """Close up appearances that a moving camera split rather than the person
+    leaving.
+
+    On a bodycam the officer turns left and right in one room, so a person drops
+    out of frame for a few seconds without going anywhere -- frame-presence is
+    measuring the camera, not the people. With `places`, two appearances merge
+    whenever the gap between them stays inside a single location, however long,
+    and never across a move; max_gap_s is then ignored. Without `places` it falls
+    back to a flat gap threshold.
+
+    Mutates and returns `people`; pass a fresh json.loads() to compare settings."""
+    for person in people:
+        merged = []
+        for a in sorted(person["appearances"], key=lambda a: a["start_s"]):
+            if merged:
+                gap_start, gap_end = merged[-1]["end_s"], a["start_s"]
+                if places:
+                    same_place = (place_at(gap_start, places) is not None
+                                  and place_at(gap_start, places) == place_at(gap_end, places))
+                else:
+                    same_place = gap_end - gap_start <= max_gap_s
+                if same_place:
+                    merged[-1]["end_s"] = max(merged[-1]["end_s"], a["end_s"])
+                    continue
+            merged.append(dict(a))
+        person["appearances"] = merged
+    return people
+
+
+def who_is_where(people=None, places=None, case_name=None, query_dir=None):
+    """[{person_id, descriptor, location, start_s, end_s}] -- each person's
+    presence split by location, which is the question the people/places pair
+    exists to answer. Zero-argument callable; loads both files if not given."""
+    from A_Config import case_name as cfg_case_name, query_dir as cfg_query_dir
+    case_name = case_name if case_name is not None else cfg_case_name()
+    query_dir = query_dir if query_dir is not None else cfg_query_dir()
+    places = places if places is not None else load_places(case_name, query_dir)
+    if people is None:
+        people = json.loads((query_dir / f"{case_name}_people.json").read_text())
+
+    rows = []
+    for person in people:
+        for a in person["appearances"]:
+            for p in places:
+                start, end = max(a["start_s"], p["start_s"]), min(a["end_s"], p["end_s"])
+                if start <= end:
+                    rows.append({"person_id": person["person_id"],
+                                 "descriptor": person.get("descriptor", ""),
+                                 "location": f"{p['category']} {p['location']}",
+                                 "start_s": start, "end_s": end})
+    return sorted(rows, key=lambda r: (r["start_s"], r["person_id"]))
+
+
+def gemini_vid_to_text(video_path, case_name, query_dir):
+    """Get Gemini's summary/objects/transcript/places/people for a video. Reuses the
+    remote cache from a previous call if it's still live (checked via
+    caches.get); otherwise uploads the video and creates a fresh cache."""
+    client, cache_name, file_ref = _open_session(video_path, case_name, query_dir)
+
     duration_s = float(_probe_format(video_path)["duration"])
     print(f"[gemini-diag] video duration {_mmss(duration_s)}, "
           f"{VIDEO_WINDOWS} windows for summary/transcript", flush=True)
@@ -287,7 +492,7 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
     _save("description.txt", summary_text)
 
     response2 = client.models.generate_content(
-        model="gemini-3.5-flash",
+        model=MODEL,
         contents=f"summary of the video:{summary_text} \n\nQuestion:What objects, pertinent to the summary are visible and when? Provide times. don't subdivide the same object into multiple times unless there is a long gap" + FORMAT_SUFFIX,
         config=_deterministic_config(cache_name)
     )
@@ -309,7 +514,7 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
     _save("transcript_full.txt", transcript_text)
 
     places = client.models.generate_content(
-            model="gemini-3.5-flash",
+            model=MODEL,
             contents= F"in 2 words, per location, describe the locations in the video. be precise."
             f"word 1 is location category, word 2 is precise location e.g house kitchen / restaurant kitchen / parking-lot apartments /parking-lot multistory "
             f"**MM:SS** : location\n\n"
@@ -322,51 +527,11 @@ def gemini_vid_to_text(video_path, case_name, query_dir):
     _save("places.txt", places.text)
 
     # --- people + per-appearance box_2d, from the same cached video ---
-    people_response = client.models.generate_content(
-        model="gemini-3.5-flash",
-        contents="Identify every distinct person visible in this video." + PEOPLE_SUFFIX,
-        config=_deterministic_config(cache_name),
-    )
-    print(people_response.text, flush=True)
-    _log_response_meta(people_response, "people")
-    # saved before the parse, so a response that won't parse is still on disk to
-    # look at instead of being lost with the traceback
-    _save("people_raw.txt", people_response.text or "")
-    # last query of the run, but still worth extending -- it leaves the cache with
-    # a fresh window for an immediate re-run, which is the common case in a notebook
-    _extend_cache(client, cache_name)
-    people_raw = people_response.text
-    people = _machine_json(people_raw, "people")[1]["people"]
-
-    # one debug overlay per appearance (not just per person) -- a person can
-    # have multiple, possibly non-contiguous, appearance windows and every one
-    # of them needs its own seed for downstream use.
-    seed_index = [(person["person_id"], a_idx, appearance)
-                  for person in people
-                  for a_idx, appearance in enumerate(person["appearances"])]
-    # sample at the middle of each appearance's labeled second (start_s +
-    # fps/2 frames, i.e. start_s + 0.5s), not the literal start_s instant.
-    target_times_s = [appearance["start_s"] + 0.5 for _, _, appearance in seed_index]
-    frames, frame_indices = frames_at_times(video_path, target_times_s)
-
-    masks_dir = query_dir / "masks"
-    masks_dir.mkdir(parents=True, exist_ok=True)
-    for (person_id, a_idx, appearance), frame, frame_idx in zip(seed_index, frames, frame_indices):
-        box = get_box(appearance)
-        if box is None:
-            print(f"  [{person_id}] appearance {a_idx} has no box_2d -- skipping")
-            continue
-        # frame_idx is the frame this image actually came from, reported by
-        # frames_at_times -- 0-indexed, so it lines up with the numbers burned in
-        # by the companion ffmpeg drawtext=text='%{n}' verification video.
-        draw_point_overlay([{"box_2d": box, "label": person_id}], frame,
-                            masks_dir / f"{person_id}_a{a_idx}_f{frame_idx:05d}.png")
-
-    # --- SAVE ---
-    # the four text answers are already on disk -- each was written by _save the
-    # moment its query returned. Only the parsed people JSON is left, and it waits
-    # until here because the debug overlays above can still reveal a bad box.
-    _save("people.json", json.dumps(people, indent=2))
+    # Its own function so the prompt can be iterated on its own; _open_session in
+    # there re-resolves the same cache this run just used, so it costs one query.
+    # The four text answers are already on disk -- each was written by _save the
+    # moment its query returned -- and gemini_people writes people.json itself.
+    gemini_people(video_path, case_name, query_dir)
     return
 
 #---DEAD---CODE-----WAS A FAILED TRACKING ATTEMPT

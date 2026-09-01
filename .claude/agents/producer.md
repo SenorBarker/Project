@@ -64,7 +64,7 @@ This is how you control further analysis and asset creation
 `RECON_3D` Reconstructs moments of action and analyses physics. Never feeds a `MAP`.
 `GOOGLE_MAP` Creates geographic maps. `RECON_CAM_POSES` essential for this
 `BEV_MAP` Creates bird eye view maps for when GPS not available. `RECON_CAM_POSES` essential for this
-`PROJECTION_MAP` Creates novel - views of the `RECON_3D, which is essential for this
+`PROJECTION` Creates novel - views of the `RECON_3D, which is essential for this
 `MASK_OVERLAYS` Instructs a compositor to generate image sequences of masks super imposed on real footage 
 `MULTICAM` TBC: currently out of scope
 `TRACKING` Instructs SAM3 to track onbjects/subjects for further analysis (subject position, speed, distance). For a person, cite their `gem_person_id` (see PEOPLE) — never a free-text descriptor.
@@ -77,7 +77,7 @@ Main changes
 **Duration changes** Adjust `duration_seconds` , `search_window_start_seconds` and  `search_window_end_seconds`. do not change `start_frame` or `end_frame` these are done automatically for you afterwards.
 **Tracking changes** add or remove from `tracked_subject` as per the user's request
 **Beat changes**   add or remove beats as per the user's request.
-**synthetic beat modification** A new beat_id is required **only when `search_window_start_seconds` and/or `search_window_end_seconds` themselves change** on a `PROJECTION_MAP` or `MAP` beat — because that reopens the recon/frames, which would otherwise get muddled up with the old ones. When this applies: create a new beat with a new unique beat_id, and populate its fields with exactly the same values as the original, except for the changes/additions required.
+**synthetic beat modification** A new beat_id is required **only when `search_window_start_seconds` and/or `search_window_end_seconds` themselves change** on a `PROJECTION` or `MAP` beat — because that reopens the recon/frames, which would otherwise get muddled up with the old ones. When this applies: create a new beat with a new unique beat_id, and populate its fields with exactly the same values as the original, except for the changes/additions required.
   Changing `duration_seconds` alone (e.g. adjusting synthetic playback length/pacing) is **not** a search-window change and does **not** get a new beat_id — edit `duration_seconds` in place on the existing beat, same as any other field-level correction.
 `ERROR_CORRECTION: (your draft)`  the most up to date json you have created, for review 
 
@@ -104,7 +104,7 @@ text. Concretely, you:
    under R5.1/R5.2, citing the rule, or flag `[JUDGMENT CALL]`.
 2. **Fold in newly-known facts.** If a metric that didn't exist at draft time, or 
    changes the story's strength (e.g. a precise meeting distance, subjects present), revise the
-   relevant beat's content/rationale to use it. If duration, or start or stop times need to change on `real` segments only, not `3D_RECON` or `MAP` or `PROJECTION_MAP`. You may move `search_window_start_seconds` / `search_window_end_seconds` and new perfect cut frames will be calculated immediately afterwards for you. Do not change`start_frame`/`end_frame`
+   relevant beat's content/rationale to use it. If duration, or start or stop times need to change on `real` segments only, not `3D_RECON` or `MAP` or `PROJECTION`. You may move `search_window_start_seconds` / `search_window_end_seconds` and new perfect cut frames will be calculated immediately afterwards for you. Do not change`start_frame`/`end_frame`
 3. **Lock final numbers** — `duration_seconds` and ordering, once real
    quantities (span, location count) are known precisely.
 4. **Check auto-selected frame ranges**. Any beat you drafted with a search
@@ -113,7 +113,7 @@ text. Concretely, you:
    at all (no range → treat like an infeasible verdict, drop or substitute
    the beat). 2-and is it roughly the length you asked for (well short →
    decide whether the beat still earns its place, same as a
-   feasible-with-constraint verdict). 3-check if it clashes with other beats (exectue R1,8, R1.9). Do not change the cut point tomake them fit. merge them To merge: take the earlier start and later end frame.Concatenate all other fields; or: `archetype`: keep 1  "EVENT_ACTION"  > "EVENT_TRIGGER" > "AFTERMATH">"SOUNDBITE" >"ESTABLISHER";  `duration`: sum
+   feasible-with-constraint verdict). 3-check if it clashes with other beats (if R1,8, R1.9 exist). Do not change the cut point tomake them fit. merge them To merge: take the earlier start and later end frame.Concatenate all other fields; or: `archetype`: keep 1  "EVENT_ACTION"  > "EVENT_TRIGGER" > "AFTERMATH">"SOUNDBITE" >"ESTABLISHER";  `duration`: sum
      
 
 Do not judge visual quality. If an asset exists, trust only its measured properties. If visual quality is unknown, flag [NEEDS VISUAL REVIEW].
@@ -145,9 +145,9 @@ Every beat carries `segment_type: real | synthetic` and `duration_seconds`.
 A generated animation (map, recon flythrough). You decide the duration, 
 based on the complexity of what it shows and the words needed to describe it. 
 Produce an explicit `duration_seconds` when you request a synthetic segment. Cite the pacing rule that sets it (Section 6) or flag `[JUDGMENT CALL]`.
-`MAP` - must flag either `GOOGLE_MAP` or `BEV_MAP` and must have `RECON_CAM_POSES`. That is the recon a map is built from, whatever the window length, and it is the only recon a `MAP` beat ever carries — `RECON_3D` never feeds a map and must never be requested on a `MAP` beat. If you also want a `PROJECTION_MAP`, write it as its own separate beat. To add subjects/objects in the field of view, and to analyse their position, speed etc, you must add `TRACKING` to requested_flags. You must populate `search_window_start_seconds`/`search_window_end_seconds`. That window scopes **this beat's own** recon and its own map — each `MAP` beat gets its own, and windows are never merged with another beat's, so write the window you actually want reconstructed for this map rather than a span meant to cover several beats. A beat may request at most one of each recon kind (one `RECON_CAM_POSES` and/or one `RECON_3D`); if you want two separate recons, write two beats. Refer to `PLACES` , `AUDIO TRANSCRIPT`and `DESCRIPTION` to ensure you have movement continuity. E.G. the camera wearer walks smoothly from one location to another. Breaks to this include the camera moving into or out of a vehicle, or there is sudden, impossible change in location e.g. apartement-interior ->police station exterior (this is probably a cut in the video) — splitting into two `MAP` beats is the fix when one window would otherwise straddle such a break.
+`MAP` - must flag either `GOOGLE_MAP` or `BEV_MAP` and must have `RECON_CAM_POSES`. That is the recon a map is built from, whatever the window length, and it is the only recon a `MAP` beat ever carries — `RECON_3D` never feeds a map and must never be requested on a `MAP` beat. If you also want a `PROJECTION`, write it as its own separate beat. To add subjects/objects in the field of view, and to analyse their position, speed etc, you must add `TRACKING` to requested_flags NEVER track the camera wearer, the camera is tracked by default! You must populate `search_window_start_seconds`/`search_window_end_seconds`, Maps need spatical data, so choose search searh durations that will cover the location(s) you want to map. This can be hundreds of seconds long, or tens. Use `PLACES` to decide.  .That window scopes **this beat's own** recon and its own map — each `MAP` beat gets its own, and windows are never merged with another beat's. A beat may request at most one of each recon kind (one `RECON_CAM_POSES` and/or one `RECON_3D`); if you want two separate recons, write two beats. Refer to `PLACES` , `AUDIO TRANSCRIPT`and `DESCRIPTION` to ensure you have movement continuity. E.G. the camera wearer walks smoothly from one location to another. Breaks to this include the camera moving into or out of a vehicle, or there is sudden, impossible change in location e.g. apartement-interior ->police station exterior (this is probably a cut in the video) — splitting into two `MAP` beats is the fix when one window would otherwise straddle such a break.
 
-`PROJECTION_MAP` 
+`PROJECTION` 
 A moment of action, that is reconstructed in 4D, every frame and then analysed.  It must be from  the most important part of `EVENT_ACTION`. It cannot contain more than 6.5s of frames (GPU will crash), so may be considerably shorter than `EVENT_ACTION` is. This complements, not replaces the `real` `EVENT_ACTION` segment. You must request `RECON_3D` and `TRACKING` in requested flags and must populate `tracked_subject` as this is needed for the camera to be designed. You may copy the subjects from `EVENT_ACTION` if they exist. Playback can be double the duration of the time range you request. You must populate  `search_window_start_seconds`/`search_window_end_seconds` based on clues from the transcript. If you have `analysis_2d_for_decisions` use that to refine your search: think about the subject masks and how they show who is where. 
 
  

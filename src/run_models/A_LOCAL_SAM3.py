@@ -55,7 +55,7 @@ _PREDICTOR = None
 
 # Past this span length, SAM3's all-on-GPU default OOMs a 24GB card late in
 # propagation (683 frames died at 681); offload video+state to host RAM instead.
-OFFLOAD_ABOVE_N_FRAMES = 650
+OFFLOAD_ABOVE_N_FRAMES = 1000
 
 # A prompt implies how many things it should match. Track ids accumulating over a
 # span is just re-identification churn, but one frame holding far more instances
@@ -242,6 +242,28 @@ def _write_id_shots(best, clip_path, masks_root, subject_slug, start_frame):
         cv2.imwrite(str(out_dir / name), crop)
 
 
+def _append_detection_rows(rows, csv_path):
+    """Append one span's detection rows to detections.csv as soon as that span
+    finishes, rather than writing every row once at the end of the whole run.
+
+    A long run that's killed part way (or dies, or is obviously tracking the
+    wrong thing and gets stopped) then still leaves every completed span's
+    detections on disk instead of losing the lot. Rows from a span that aborts
+    on ObjectTooDense are dropped before they ever reach here, so the rollback
+    behaviour is unchanged.
+
+    Append mode rather than read-concat-rewrite: track_id numbering never reuses
+    an id already on disk (see _next_track_id_start), so neither an earlier
+    span's rows nor a previous run's can collide with these -- nothing needs
+    reading back to dedup against.
+    """
+    if not rows:
+        return
+    pd.DataFrame(rows).to_csv(
+        csv_path, mode="a", header=not csv_path.exists(), index=False
+    )
+
+
 def _run_sam3_tracking_local(video_path, tracking_requests_by_subject, threshold,
                              *_roboflow_args, **_roboflow_kwargs):
     """
@@ -278,7 +300,9 @@ def _run_sam3_tracking_local(video_path, tracking_requests_by_subject, threshold
 
             tmp_clip = masks_root / f"_span_with_handle_{subject_slug}.mp4"
             start_frame, fps, width, height = make_span_clip(video_path, tmp_clip, span_start_s, span_end_s)
-            print(f"[{subject_slug}] requested {span_start_s}-{span_end_s}s -> keyframe-aligned start frame {start_frame}")
+            beats_note = f" for {', '.join(request_beat_ids)}" if request_beat_ids else ""
+            print(f"[{subject_slug}]{beats_note} requested {span_start_s}-{span_end_s}s "
+                  f"-> keyframe-aligned start frame {start_frame}")
 
             # obj_id from SAM3 is scoped to this one session, so it restarts
             # for every new span -- map it to the subject's globally-continuing
@@ -332,6 +356,8 @@ def _run_sam3_tracking_local(video_path, tracking_requests_by_subject, threshold
                 best.clear()
             else:
                 _write_id_shots(best, tmp_clip, masks_root, subject_slug, start_frame)
+                _append_detection_rows(raw_detection_rows[rows_before_span:],
+                                       masks_root / "detections.csv")
             finally:
                 tmp_clip.unlink(missing_ok=True)
                 # predictor is a process-wide singleton, so every span's freed
@@ -359,10 +385,11 @@ def _run_sam3_tracking_local(video_path, tracking_requests_by_subject, threshold
                 }
                 analysis_2d_for_decisions[instance_key] = entry
         else:
+            beats_note = f" ({', '.join(sorted(subject_beat_ids))})" if subject_beat_ids else ""
             if subject_too_dense:
-                print(f"[{subject_slug}] not tracked -- every span was too dense")
+                print(f"[{subject_slug}]{beats_note} not tracked -- every span was too dense")
             else:
-                print(f"[{subject_slug}] no detections across any requested span")
+                print(f"[{subject_slug}]{beats_note} no detections across any requested span")
             entry = {
                 "Subject_frames_present": [],
                 "subject_first_frame": None,
@@ -378,15 +405,8 @@ def _run_sam3_tracking_local(video_path, tracking_requests_by_subject, threshold
 
     release_predictor()  # tracking is done; don't hold the card for the next stage
 
-    if raw_detection_rows:
-        csv_path = masks_root / "detections.csv"
-        new_rows = pd.DataFrame(raw_detection_rows)
-        if csv_path.exists():
-            # track_id numbering never reuses an id already on disk (see
-            # _next_track_id_start), so this run's rows can't collide with a
-            # prior run's -- a plain concat is safe, no dedup needed.
-            new_rows = pd.concat([pd.read_csv(csv_path), new_rows], ignore_index=True)
-        new_rows.to_csv(csv_path, index=False)
+    # detections.csv is already complete -- _append_detection_rows flushed each
+    # span's rows as that span finished, so there is nothing left to write here.
 
     # Two different failures used to share one message, and "found no detections"
     # sends you looking at the footage when the real answer is that nothing was

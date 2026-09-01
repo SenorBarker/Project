@@ -808,7 +808,7 @@ def _projection_map_mezzanine_clip(beat, target_w, target_h, target_fps, out_dir
     frames_dir = assets_dir() / f"projection_frames_{beat_id}"
     if not frames_dir.exists():
         raise FileNotFoundError(
-            f"Beat {beat['beat_id']} wants a PROJECTION_MAP clip but {frames_dir} "
+            f"Beat {beat['beat_id']} wants a PROJECTION clip but {frames_dir} "
             f"doesn't exist -- render the projection map for this beat first."
         )
 
@@ -995,7 +995,7 @@ def assemble_paper_edit(video_path, analysis_2d_for_decisions=None, recon_jobs=N
         elif beat["segment_type"] == "synthetic" and beat["archetype"] == "MAP":
             type = next(f for f in beat["requested_flags"] if f in ("GOOGLE_MAP", "BEV_MAP"))
             clip_paths.append(_map_mezzanine_clip(beat, type, target_w, target_h, fps, mezzanine_dir))
-        elif beat["segment_type"] == "synthetic" and beat["archetype"] == "PROJECTION_MAP":
+        elif beat["segment_type"] == "synthetic" and beat["archetype"] == "PROJECTION":
             clip_paths.append(_projection_map_mezzanine_clip(beat, target_w, target_h, fps, mezzanine_dir))
         else:
             raise NotImplementedError(

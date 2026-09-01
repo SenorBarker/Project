@@ -13,7 +13,7 @@ Rules the planning agent follows for paper edits. Every decision must cite a rul
     - `SOUNDBITE` — audio-lead. the visuals are not important.
     - `MAP` — a synthetic map/recon asset request (interior or geographic).
     - `METRIC` — a chart/stat asset request.
-    - `PROJECTION_MAP`- 4D rendering of an `EVENT_ACTION`
+    - `PROJECTION`- 4D rendering of an `EVENT_ACTION`
     
 1. Picture Editing  
     R1.1 
@@ -50,17 +50,18 @@ Rules the planning agent follows for paper edits. Every decision must cite a rul
     R5.2 — Use a google map only if geography matters. spatial questions like "where...", "how far" can be considered geographical questions.  
     R5.3 — MAP durations need to be as long as possible, without introducing clear recon errors. They need to cover `EVENT_ACTION`, `EVENT_TRIGGER` and `AFTERMATH` as long as this doesn't lead to extreme changes in location taht can't be reasonably mapped with a 3D reconstruction
     R5.4 — Where people are and where they go can be covered by a MAP. Use RECON_3D if something fast is happening that will be missed by the low sample rate of the map. 
-    R5.5 — Use the map to showt he location of key people.
+    R5.5 — Use the map to show the location of key people.
+    
     
 6. Structure & Pacing  
     R6.1 — Do not open with out-of-order soundbites, hooks or teasers
-    R6.2 — Open with stakes or a concrete scene in under 10 seconds. This doesn't need to come from the first 10s of the video.  
+    R6.2 — `ESTABLISHER` must be less than 10s, get into  `EVENT` archetyes fast. This doesn't need to come from the first 10s of the video.  
     R6.3 — Keep one throughline - which answers the user's prompt.  
     R6.4 — Cut to information density, not rhythm.  
     R6.5 — Separate data beats with other content  
     R6.6 — Maps cannot open unless geography is the story.  
-    R6.7 — Never end on a map.
-    R6.8 — `PROJECTION_MAP` are action replays. They either go after the real beat that has the same source frames, or at the end of the video 
+    R6.7 — Never end on a geographic map
+    R6.8 — `PROJECTION` are action replays. They either go after the real beat that has the same source frames, or at the end of the video 
         
 7. Decision Reporting  
     R7.1 — Name  rejected alternatives and why.  

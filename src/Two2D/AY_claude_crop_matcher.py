@@ -30,8 +30,19 @@ import cv2
 import numpy as np
 
 
-def descriptor_targets(paper_edit_json_path,descriptor_targets=None):
+def descriptor_targets(paper_edit_json_path, descriptor_targets=None,
+                       gem_people_json_path=None):
     """gem_person_id -> {"descriptor": str, "windows": [(start_s, end_s), ...]}.
+
+    The descriptor is Gemini's, looked up in people.json by gem_person_id -- NOT
+    the copy the Producer wrote into the beat. Nothing asks the Producer to
+    reproduce it verbatim (producer.md's own example paraphrases: "suspect in
+    yellow jacket"), so its copy is a summary and loses exactly the features a
+    masked crop can be matched on. Seen on 602_ManU_ref: people.json's
+    "Tottenham player in yellow jersey, number 17, dark hair and beard" reached
+    the matcher as "Tottenham player number 17" -- jersey colour, hair and beard
+    gone, leaving a shirt number that is rarely legible at crop size.
+    The beat's own text is the fallback, for an id people.json doesn't carry.
 
     Windows come from render_paper_edit.tracking_windows -- the same helper the
     tracker builds its spans from, so a person is matched over exactly the windows
@@ -45,12 +56,25 @@ def descriptor_targets(paper_edit_json_path,descriptor_targets=None):
     objection to letting MAP beats in at all (a recon-scale window would let a
     track from anywhere in the clip answer for a person seen in one 6s beat).
     """
+    import A_Config
     from render_paper_edit import tracking_windows, paper_edit_path
 
     if paper_edit_json_path is None:
         paper_edit_json_path = paper_edit_path("draft")
+    if gem_people_json_path is None:
+        gem_people_json_path = A_Config.query_dir() / f"{A_Config.case_name()}_people.json"
 
     paper_edit = json.loads(Path(paper_edit_json_path).read_text(encoding="utf-8"))
+    gem_people_json_path = Path(gem_people_json_path)
+    gem_descriptors = {}
+    if gem_people_json_path.exists():
+        gem_descriptors = {
+            person["person_id"]: person.get("descriptor", "")
+            for person in json.loads(gem_people_json_path.read_text(encoding="utf-8"))
+        }
+    else:
+        print(f"[crop match] no {gem_people_json_path.name} -- falling back to the "
+              f"Producer's descriptors, which are summaries")
 
     targets = {}
     for beat in paper_edit["beats"]:
@@ -60,8 +84,15 @@ def descriptor_targets(paper_edit_json_path,descriptor_targets=None):
         for entry in beat.get("tracked_subject") or []:
             if not isinstance(entry, dict):
                 continue
+            gem_person_id = entry["gem_person_id"]
+            gem_descriptor = gem_descriptors.get(gem_person_id)
+            producer_descriptor = entry.get("descriptor", "")
+            if gem_descriptor is None:
+                print(f"[crop match] {gem_person_id} not in {gem_people_json_path.name} "
+                      f"-- matching on the Producer's text: {producer_descriptor!r}")
             target = targets.setdefault(
-                entry["gem_person_id"], {"descriptor": entry.get("descriptor", ""), "windows": []}
+                gem_person_id,
+                {"descriptor": gem_descriptor or producer_descriptor, "windows": []},
             )
             target["windows"].extend(windows)
     return targets
@@ -76,6 +107,20 @@ def _mask_frames(track_dir):
         except ValueError:
             continue
     return sorted(frames)
+
+
+def _real_extent_frames(frames, min_mask_px):
+    """Filter (frame_idx, mask_path) pairs down to masks with real spatial extent.
+
+    A file existing at a frame isn't the same as the subject being present there --
+    SAM3 writes near-empty masks when a track degrades, and those shouldn't count
+    toward "this track occupies this frame" (co-occurrence checks, span math)."""
+    real = []
+    for frame_idx, mask_path in frames:
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        if mask is not None and int((mask > 0).sum()) >= min_mask_px:
+            real.append((frame_idx, mask_path))
+    return real
 
 
 def _isolate(frame, mask, pad=0.12, max_side=640):
@@ -131,12 +176,15 @@ def write_masked_crops(masks_root=None, video_path=None, out_dir=None,
     wanted = {}  # frame_idx -> [(track_name, mask_path), ...]
     scored_count = {}
     span = {}  # track_name -> (first_frame, last_frame)
+    mask_frames = {}  # track_name -> {frame_idx, ...} every frame this track has a mask on
     for track_dir in sorted(p for p in masks_root.iterdir() if p.is_dir() and not p.name.startswith("_")):
         if subject_slug is not None and track_dir.name.rsplit("-", 1)[0] != subject_slug:
             continue
         frames = _mask_frames(track_dir)
         scored_count[track_dir.name] = len(frames)
-        span[track_dir.name] = (frames[0][0], frames[-1][0]) if frames else (None, None)
+        real_frames = _real_extent_frames(frames, min_mask_px)
+        span[track_dir.name] = (real_frames[0][0], real_frames[-1][0]) if real_frames else (None, None)
+        mask_frames[track_dir.name] = {frame_idx for frame_idx, _ in real_frames}
         step = max(1, len(frames) // per_track)
         for frame_idx, mask_path in frames[::step][:per_track]:
             wanted.setdefault(frame_idx, []).append((track_dir.name, mask_path))
@@ -168,7 +216,12 @@ def write_masked_crops(masks_root=None, video_path=None, out_dir=None,
             _save_8bit(_isolate(frame, mask), crop_path)
             track = crops_by_track.setdefault(
                 track_name,
-                {"crops": [], "first_frame": span[track_name][0], "last_frame": span[track_name][1]},
+                {
+                    "crops": [],
+                    "first_frame": span[track_name][0],
+                    "last_frame": span[track_name][1],
+                    "mask_frames": mask_frames[track_name],
+                },
             )
             track["crops"].append(crop_path)
 
@@ -279,13 +332,23 @@ def match_tracks_to_descriptors(paper_edit_json_path,crops_by_track=None, target
         if track_key.rsplit("-", 1)[0] != "person":
             continue
 
-        # someone already identified while this track was on screen is someone else
+        # someone already identified while this track was on screen is someone else --
+        # but SAM drops and reacquires a subject as a new track id when its mask
+        # degrades (see person-19/person-20 on 501_EGO_DANCE: spans overlap 3628-4115
+        # vs 3714-4199, but only 2 of ~200 combined masked frames are actually shared).
+        # Span overlap alone flags that as co-visibility and silently excludes the
+        # later fragment before the model ever sees it. Real frame overlap is what
+        # co-visibility actually means; a couple of frames at a handoff is noise, not
+        # a second person.
+        MAX_COOCCURRENCE_FRAC = 0.5
         candidates = []
         for gem_person_id in targets:
             other = taken.get(gem_person_id)
-            if other and track["first_frame"] <= other["last_frame"] \
-                    and other["first_frame"] <= track["last_frame"]:
-                continue
+            if other:
+                shared = track["mask_frames"] & other["mask_frames"]
+                smaller = min(len(track["mask_frames"]), len(other["mask_frames"])) or 1
+                if len(shared) / smaller > MAX_COOCCURRENCE_FRAC:
+                    continue
             candidates.append(gem_person_id)
         if not candidates:
             # Two very different reasons land here. With no targets at all nothing
@@ -315,7 +378,17 @@ def match_tracks_to_descriptors(paper_edit_json_path,crops_by_track=None, target
         )
         if matched:
             results[matched].append(int(track_key.rsplit("-", 1)[1]))
-            taken[matched] = track
+            # merge into any earlier fragment matched to the same person, so a third
+            # fragment later on is checked against the full history, not just this one
+            existing = taken.get(matched)
+            if existing:
+                taken[matched] = {
+                    "first_frame": min(existing["first_frame"], track["first_frame"]),
+                    "last_frame": max(existing["last_frame"], track["last_frame"]),
+                    "mask_frames": existing["mask_frames"] | track["mask_frames"],
+                }
+            else:
+                taken[matched] = track
         else:
             unmatched.append(track_key)
         print(f"{track_key} -> {matched or 'NONE'}")

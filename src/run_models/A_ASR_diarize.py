@@ -182,42 +182,69 @@ UTTERANCE_GAP_S = 2.0
 MAX_UTTERANCE_S = 10.0
 
 
-def _defuse_speechbrain_lazy_integrations():
-    """Stop speechbrain's optional integrations from raising when merely looked at.
+# Subtrees of speechbrain.integrations that cannot be imported in this env:
+# nlp needs flair, k2_fsa needs k2, numba needs numba. None of them is used --
+# pyannote's speaker embeddings come from its own wespeaker wrapper.
+_SPEECHBRAIN_UNUSABLE = (
+    "speechbrain.integrations.nlp",
+    "speechbrain.integrations.k2_fsa",
+    "speechbrain.integrations.numba",
+)
 
-    speechbrain (pulled in by pyannote) lazily exports every subpackage under
-    `integrations`, and three of them import a dependency that isn't installed
-    here -- nlp wants flair, k2_fsa wants k2, numba wants numba. The import
-    fires on *attribute access*, not on use, so anything that walks module
-    attributes detonates it: a debugger, a variable explorer, autoreload, or
-    IPython's verbose traceback formatter.
 
-    That last one is why this matters. When the formatter trips it while
-    rendering some other exception, the flair ImportError is what reaches the
-    notebook and the real error is never shown. Registering an empty module
-    under each name means importlib finds it already imported and never runs
-    the failing file, so a traceback stays a traceback.
+class _EmptyModuleFinder:
+    """Import hook that hands back an empty module for the speechbrain
+    integrations this environment cannot import, instead of letting them raise.
 
-    Nothing here uses those integrations -- pyannote's speaker embeddings come
-    from its own wespeaker wrapper -- so an empty stand-in costs nothing. If
-    one is ever genuinely needed, install its dependency and drop it from the
-    map below."""
-    optional = {"nlp": ("flair", "spacy"), "k2_fsa": ("k2",), "numba": ("numba",)}
-    for subpackage, dependencies in optional.items():
-        name = f"speechbrain.integrations.{subpackage}"
-        if name in sys.modules:
-            continue
-        # find_spec answers "is it installed" without importing it.
-        if all(importlib.util.find_spec(d) is not None for d in dependencies):
-            continue
-        stub = types.ModuleType(name)
-        stub.__doc__ = (
-            f"Stand-in for {name}, whose optional dependencies "
-            f"({', '.join(dependencies)}) are not installed. Registered by "
-            f"{__name__} so that looking at this attribute cannot raise."
+    speechbrain lazily exports every module under `integrations`, all the way
+    down to leaves like numba.transducer_loss, and the import fires on
+    *attribute access* rather than on use. So anything that walks module
+    attributes sets one off -- autoreload's post-execute sweep, a debugger, a
+    variable explorer, IPython's verbose traceback formatter. The last is the
+    worst: tripped while rendering some other exception, its ImportError is
+    what reaches the notebook and the real error is never seen.
+
+    A finder rather than pre-registered stub modules in sys.modules, which is
+    the obvious approach and the one tried first. A stub package has no
+    __path__ into the real directory, so the submodules underneath it become
+    unfindable and the crash simply moves down a level: stubbing
+    integrations.numba turned the numba ImportError into a
+    ModuleNotFoundError for integrations.numba.transducer_loss. A finder sits
+    in front of the whole subtree at any depth and answers uniformly.
+
+    Installed at the front of sys.meta_path but scoped to those three prefixes,
+    so every other import in the process -- speechbrain's own, and everyone
+    else's -- resolves normally."""
+
+    def find_spec(self, fullname, path=None, target=None):
+        if not any(fullname == p or fullname.startswith(p + ".")
+                   for p in _SPEECHBRAIN_UNUSABLE):
+            return None
+        return importlib.util.spec_from_loader(fullname, self)
+
+    def create_module(self, spec):
+        module = types.ModuleType(spec.name)
+        module.__doc__ = (
+            f"Empty stand-in for {spec.name}, whose optional dependency is not "
+            f"installed. Provided by {__name__} so that merely looking at this "
+            f"attribute cannot raise."
         )
-        stub.__path__ = []  # a package, so submodule lookups fail quietly too
-        sys.modules[name] = stub
+        module.__path__ = []  # a package, so children come back here too
+        return module
+
+    def exec_module(self, module):
+        pass
+
+
+def _defuse_speechbrain_lazy_integrations():
+    """Install the finder once, and clear anything a previous version left in
+    sys.modules so a kernel that already imported this module heals on reload
+    rather than needing a restart."""
+    if not any(isinstance(f, _EmptyModuleFinder) for f in sys.meta_path):
+        sys.meta_path.insert(0, _EmptyModuleFinder())
+    for name in list(sys.modules):
+        if any(name == p or name.startswith(p + ".") for p in _SPEECHBRAIN_UNUSABLE):
+            del sys.modules[name]
 
 
 _defuse_speechbrain_lazy_integrations()

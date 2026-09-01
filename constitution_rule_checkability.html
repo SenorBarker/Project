@@ -1,0 +1,201 @@
+<title>Rule Checkability Ledger</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+:root{--ground:#EDEFF1;--surface:#FFF;--sunk:#E4E8EB;--stripe:#F6F8F9;--ink:#10161D;--body:#2C3742;
+ --muted:#5D6B79;--line:#D2D9DF;--accent:#26418F;--ok:#1C6B4A;--warn:#8A5A06;--bad:#9E1F16;
+ --okbg:#E3F0E9;--warnbg:#F8EFDC;--badbg:#F9E3E0;--nabg:#E8EBEE;}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--ground:#0F1418;--surface:#171E25;--sunk:#121920;--stripe:#141B22;
+ --ink:#E8EDF2;--body:#C3CDD7;--muted:#8B99A6;--line:#2A333C;--accent:#8FAAEE;--ok:#5CBF93;--warn:#DFA945;--bad:#EC8378;
+ --okbg:#15291F;--warnbg:#2B2313;--badbg:#2E1A18;--nabg:#1C242C;}}
+:root[data-theme="dark"]{--ground:#0F1418;--surface:#171E25;--sunk:#121920;--stripe:#141B22;
+ --ink:#E8EDF2;--body:#C3CDD7;--muted:#8B99A6;--line:#2A333C;--accent:#8FAAEE;--ok:#5CBF93;--warn:#DFA945;--bad:#EC8378;
+ --okbg:#15291F;--warnbg:#2B2313;--badbg:#2E1A18;--nabg:#1C242C;}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--body);font-family:"IBM Plex Sans",system-ui,sans-serif;font-size:14px;line-height:1.55;}
+code{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.87em;}
+.wrap{max-width:1560px;margin:0 auto;padding:40px 20px 90px;}
+h1{font-size:1.9rem;color:var(--ink);margin:0;font-weight:700;letter-spacing:-.01em;}
+h2{font-size:1.12rem;color:var(--ink);margin:0 0 10px;font-weight:600;}
+.kicker{font-family:"IBM Plex Mono",monospace;font-size:.7rem;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin-bottom:10px;}
+.lede{max-width:88ch;margin:12px 0 0;}
+section{margin-top:34px;}
+.key{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;}
+.k{background:var(--surface);border:1px solid var(--line);border-radius:3px;padding:12px 14px;}
+.k b{display:block;font-family:"IBM Plex Mono",monospace;font-size:1.4rem;line-height:1;margin-bottom:5px;color:var(--ink);}
+.k span{font-size:.83rem;color:var(--muted);}
+.k.yes b{color:var(--ok)} .k.part b{color:var(--warn)} .k.no b{color:var(--bad)} .k.na b{color:var(--muted)}
+.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:3px;background:var(--surface);}
+table{width:100%;border-collapse:collapse;font-size:.81rem;font-variant-numeric:tabular-nums;}
+th{position:sticky;top:0;z-index:2;background:var(--sunk);color:var(--muted);text-align:left;
+ font-family:"IBM Plex Mono",monospace;font-size:.66rem;letter-spacing:.07em;text-transform:uppercase;font-weight:600;
+ padding:9px 10px;border-bottom:1px solid var(--line);}
+td{padding:10px;border-bottom:1px solid var(--line);vertical-align:top;}
+tbody tr:nth-child(even):not(.sec){background:var(--stripe);}
+tr.sec td{background:transparent;border-top:1px solid var(--accent);font-family:"IBM Plex Mono",monospace;
+ font-size:.73rem;letter-spacing:.06em;color:var(--accent);font-weight:600;padding:12px 10px 8px;}
+td.rid{font-family:"IBM Plex Mono",monospace;font-weight:600;color:var(--ink);white-space:nowrap;font-size:.85rem;}
+.grade{display:inline-block;font-family:"IBM Plex Mono",monospace;font-size:.65rem;letter-spacing:.05em;
+ padding:2px 6px;border-radius:2px;white-space:nowrap;font-weight:600;}
+.grade.gr-yes{background:var(--okbg);color:var(--ok)}
+.grade.gr-part{background:var(--warnbg);color:var(--warn)}
+.grade.gr-no{background:var(--badbg);color:var(--bad)}
+.grade.gr-na{background:var(--nabg);color:var(--muted)}
+td.txt{min-width:270px;max-width:340px;color:var(--ink);}
+td.how{min-width:300px;max-width:420px;color:var(--body);}
+.vn{color:var(--muted);font-family:"IBM Plex Mono",monospace;font-size:.72em;}
+.hist{margin-top:5px;font-size:.72rem;color:var(--muted);font-style:italic;}
+.cav{margin-top:6px;padding:6px 8px;background:var(--warnbg);border-radius:2px;font-size:.75rem;color:var(--body);}
+td.n{text-align:right;white-space:nowrap;font-family:"IBM Plex Mono",monospace;width:78px;}
+td.n b.cnt{font-size:1.1rem;color:var(--bad);font-weight:600;display:block;}
+td.n b.zero{font-size:1.1rem;color:var(--ok);font-weight:600;}
+td.n .fl{font-size:.65rem;color:var(--muted);display:block;}
+tr.gr-no td.rid,tr.gr-na td.rid{color:var(--muted);}
+footer{margin-top:40px;padding-top:16px;border-top:1px solid var(--line);font-size:.78rem;color:var(--muted);}
+footer p{max-width:104ch;margin:0 0 8px;}
+@media (max-width:700px){.wrap{padding:26px 12px 60px}}
+</style>
+<div class="wrap">
+<div class="kicker">Editorial constitution &middot; rule-by-rule</div>
+<h1>Rule Checkability Ledger</h1>
+<p class="lede">Every rule ID that has ever existed across all eight versions of <code>CONSTITUTION.md</code> plus the four <code>_v0*</code> side files &mdash; <b>49 IDs</b>. For each: can a breach even be detected from what the pipeline stores, how would I detect it, and how often did it happen across the 55 paper edits.</p>
+
+<section>
+<div class="key">
+<div class="k yes"><b>14</b><span><b>Decidable</b> &mdash; a structural test on the beat JSON settles it, no judgement needed.</span></div>
+<div class="k part"><b>5</b><span><b>Partial</b> &mdash; testable in one direction only, or via a proxy, or only where side data exists.</span></div>
+<div class="k no"><b>19</b><span><b>Not checkable</b> &mdash; needs the footage, the full transcript, or an editorial judgement about content.</span></div>
+<div class="k na"><b>11</b><span><b>N/A</b> &mdash; stripped before the producer ever sees it, empty, or with no representation in the output schema.</span></div>
+</div>
+</section>
+
+<section>
+<h2>Three things the grading exposes</h2>
+<p class="lede"><b>Just over a third of the constitution is enforceable.</b> 19 of 49 IDs can be tested at all, and 5 of those only partially. The rest are either editorial judgement (&sect;3, &sect;4, most of &sect;6, &sect;9, &sect;10) or were never visible to the producer in the first place.</p>
+<p class="lede"><b>11 IDs are dead weight.</b> R1.1&ndash;R1.5 and R2.3&ndash;R2.6 carry <code>[FOOTAGE]</code> and R3.1 carries <code>[IGNORE]</code>, so <code>constitution_view.py</code> strips all ten before the producer's prompt is built. R8.1 governs captions, and there is no caption field in the beat schema. They have never constrained anything.</p>
+<p class="lede"><b>R1.6 and R1.9 cannot both be satisfied.</b> R1.6 requires the cut to land outside the beat, before its start and after its end. R1.9 forbids same-camera beats overlapping in time, and the fix the agent reaches for is to trim one beat's boundary to the other's &mdash; which puts the cut exactly on the join, with no handle either side. 5 of the 7 zero-handle joins in the set were produced by an explicitly R1.9-cited trim. The constitution is asking for two incompatible things and the agent has been resolving it in R1.9's favour every time.</p>
+<p class="lede"><b>One rule is unbreakable by construction.</b> R1.7 grants a permission and forbids nothing, so no state of the data can violate it.</p>
+</section>
+
+<section>
+<h2>The ledger</h2>
+<div class="scroll"><table>
+<thead><tr><th>Rule</th><th>Checkable?</th><th>Text as it governed the paper edits</th><th>How I check it &mdash; and what that misses</th><th>Times broken</th><th>Broken &amp; uncited</th></tr></thead>
+<tbody>
+<tr class="sec"><td colspan="6">1 &middot; Picture Editing</td></tr>
+<tr class="gr-na"><td class="rid">R1.1</td><td><span class="grade gr-na">N/A</span></td>
+<td class="txt">[FOOTAGE] No jump cuts on the same subject; change angle by 30&deg;+ or shot size.</td><td class="how">Needs the frames. Also stripped by <code>constitution_view.py</code> &mdash; the producer has never seen it.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-na"><td class="rid">R1.2</td><td><span class="grade gr-na">N/A</span></td>
+<td class="txt">[FOOTAGE] Cut on action.</td><td class="how">Needs the frames. Stripped before the producer sees it.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-na"><td class="rid">R1.3</td><td><span class="grade gr-na">N/A</span></td>
+<td class="txt">[FOOTAGE] Keep screen direction consistent unless bridged.</td><td class="how">Needs the frames. Stripped.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-na"><td class="rid">R1.4</td><td><span class="grade gr-na">N/A</span></td>
+<td class="txt">[FOOTAGE] Match eyeline and position or flag a break.</td><td class="how">Needs the frames. Stripped.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-na"><td class="rid">R1.5</td><td><span class="grade gr-na">N/A</span></td>
+<td class="txt">[FOOTAGE] Establish a location before tighter coverage, unless the cold open withholds it.</td><td class="how">Needs the frames. Stripped.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-yes"><td class="rid">R1.6</td><td><span class="grade gr-yes">Decidable</span></td>
+<td class="txt">Primary cut points are before and after beats start and end.<div class="hist">Earlier text: v02: was R8.1's caption rule</div></td><td class="how">Not a tautology &mdash; a handles rule. The cut must land <i>outside</i> the beat: before its start and after its end. Test: compare <code>auto_select_original_search_window_seconds</code> against <code>auto_select_audio_span_seconds</code> &mdash; the resolved span must extend past the requested window on both sides. No fps conversion needed, both are in seconds.<div class="cav">Two separate failure modes. <b>(1)</b> 38 of the 108 scoreable beats have no head handle &mdash; the resolver pads the tail outward but snaps the head <i>inward</i> to an audio boundary (req <code>[128,134]</code> &rarr; resolved <code>[128.1, 134.76]</code>). That is the pipeline's behaviour, not the producer's. <b>(2)</b> 7 joins across 5 edits have a cut sitting exactly on a shared frame, i.e. zero handle either side &mdash; and 5 of those 7 were created by trimming to satisfy R1.9. <b>R1.9 and R1.6 are in direct conflict:</b> removing a same-camera overlap by trimming to a shared boundary necessarily destroys the handles R1.6 requires. Only 108 of 388 beats record both spans, so the rest are unscoreable.</div></td><td class="n"><b class="cnt">38</b><span class="fl">in 10 edits</span></td><td class="n"><b class="cnt">33</b></td></tr>
+<tr class="gr-no"><td class="rid">R1.7</td><td><span class="grade gr-no">Not checkable</span></td>
+<td class="txt">A beat can contain multiple clips</td><td class="how">Permissive. Grants a freedom, forbids nothing, so it cannot be broken.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-yes"><td class="rid">R1.8</td><td><span class="grade gr-yes">Decidable</span></td>
+<td class="txt">Merge clips into one if they are from the same camera and there is either overlap, no gap, or only a short pause between them.<div class="hist">Earlier text: wording tightened 3&times;</div></td><td class="how">Adjacent <code>real</code> beats, same <code>source</code> camera, where <code>end_frame</code> &ge; the next <code>start_frame</code> (overlap) or exactly equals it (no gap), that were left as separate beats.<div class="cav">&ldquo;Short pause&rdquo; has no threshold in the text, so I only scored the overlap and zero-gap halves. The true count is &ge; this.</div></td><td class="n"><b class="cnt">9</b><span class="fl">in 5 edits</span></td><td class="n"><b class="cnt">9</b></td></tr>
+<tr class="gr-yes"><td class="rid">R1.9</td><td><span class="grade gr-yes">Decidable</span></td>
+<td class="txt">Do not propose beats from the same camera, that overlap in time<div class="hist">Earlier text: f0cad6c only: was R1.10's audio/video rule</div></td><td class="how">All beat pairs, same <code>source</code> camera, both <code>real</code>, where the frame ranges intersect. Fully decidable.</td><td class="n"><b class="cnt">7</b><span class="fl">in 4 edits</span></td><td class="n"><b class="cnt">7</b></td></tr>
+<tr class="gr-no"><td class="rid">R1.10</td><td><span class="grade gr-no">Not checkable</span></td>
+<td class="txt">Video is just as important as audio. If an audio cut splits useable video, then adjust the cut point<div class="hist">Earlier text: f0cad6c only: was R1.11's transcript rule</div></td><td class="how">Requires knowing whether the video either side of the cut was usable. Needs the footage.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-no"><td class="rid">R1.11</td><td><span class="grade gr-no">Not checkable</span></td>
+<td class="txt">Before finalizing a real segment's frame range, check the transcript for the same span &hellip; if dialogue discusses the subject there, add a beat or extend the segment.</td><td class="how">I can find gaps between beats, but &ldquo;dialogue discusses the subject&rdquo; is a judgement, and word-level ASR exists for only 3 of the 55 edits.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="sec"><td colspan="6">2 &middot; Sound Editing</td></tr>
+<tr class="gr-no"><td class="rid">R2.1</td><td><span class="grade gr-no">Not checkable</span></td>
+<td class="txt">Do not cut mid-beat: a cut point must not fall inside a word, sentence, or coherent exchange with usable audio.<div class="hist">Earlier text: v02: was R2.3's ambience rule</div></td><td class="how"><i>Would be decidable</i> &mdash; test each beat boundary against the word intervals in <code>013_ASR_outputs/*_asr_words.json</code>. Blocked twice: ASR words exist for 3 edits only, and the beats store frames while ASR stores seconds, so it needs an fps I won't assume.<div class="cav">Ask me for the fps and I'll score those 3.</div></td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-no"><td class="rid">R2.2</td><td><span class="grade gr-no">Not checkable</span></td>
+<td class="txt">Audio that is not relevent to the subject of a beat doesn't belong in the beat.<div class="hist">Earlier text: v02: was R2.4's L-cut rule</div></td><td class="how">&ldquo;Relevant to the subject&rdquo; is a judgement about content I cannot hear.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-na"><td class="rid">R2.3</td><td><span class="grade gr-na">N/A</span></td>
+<td class="txt">[FOOTAGE] Keep ambience under every cut; no hard silence.<div class="hist">Earlier text: v02: was R2.5</div></td><td class="how">Needs the audio. Stripped before the producer sees it.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-na"><td class="rid">R2.4</td><td><span class="grade gr-na">N/A</span></td>
+<td class="txt">[FOOTAGE] Prefer L-cuts/J-cuts over hard sound cuts.<div class="hist">Earlier text: v02: was R2.6</div></td><td class="how">Needs the audio. Stripped.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-na"><td class="rid">R2.5</td><td><span class="grade gr-na">N/A</span></td>
+<td class="txt">[FOOTAGE] Match loudness across sources.</td><td class="how">Needs the audio. Stripped.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-na"><td class="rid">R2.6</td><td><span class="grade gr-na">N/A</span></td>
+<td class="txt">[FOOTAGE] Music must not punctuate factual changes.</td><td class="how">Needs the audio. Stripped.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="sec"><td colspan="6">3 &middot; Sourcing &amp; Balance</td></tr>
+<tr class="gr-na"><td class="rid">R3.1</td><td><span class="grade gr-na">N/A</span></td>
+<td class="txt">[IGNORE] Contested claims need two sources or a single-source flag.</td><td class="how">Tagged <code>[IGNORE]</code>, then emptied entirely on 08-27. Never reached the producer.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-no"><td class="rid">R3.2</td><td><span class="grade gr-no">Not checkable</span></td>
+<td class="txt">No statistic without source and timeframe.</td><td class="how">I can regex numbers out of quotes, but deciding whether a stated figure carries an adequate source and timeframe is a judgement about the underlying material.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-no"><td class="rid">R3.3</td><td><span class="grade gr-no">Not checkable</span></td>
+<td class="txt">Include dissent or flag its absence.</td><td class="how">Requires knowing whether dissent existed in the source material to be included.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="sec"><td colspan="6">4 &middot; Soundbite Selection</td></tr>
+<tr class="gr-no"><td class="rid">R4.1</td><td><span class="grade gr-no">Not checkable</span></td>
+<td class="txt">Sync that discusses the subject is important and is a priority<div class="hist">Earlier text: v02: was R4.2</div></td><td class="how">States a priority, not a constraint. Nothing in the data can contradict it.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-no"><td class="rid">R4.2</td><td><span class="grade gr-no">Not checkable</span></td>
+<td class="txt">Prefer specific over general.<div class="hist">Earlier text: v02: was R4.3</div></td><td class="how">Comparative judgement against the alternatives that were available but not chosen.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-no"><td class="rid">R4.3</td><td><span class="grade gr-no">Not checkable</span></td>
+<td class="txt">Use the shortest sufficient quote.<div class="hist">Earlier text: v02: was R4.4</div></td><td class="how">Requires knowing what would have been sufficient. Not in the data.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-part"><td class="rid">R4.4</td><td><span class="grade gr-part">Partial</span></td>
+<td class="txt">Do not change meaning by cutting.<div class="hist">Earlier text: v02: was R4.5</div></td><td class="how">Proxy only: quotes containing an ellipsis are spliced from non-contiguous speech, which is where meaning-change risk lives. Whether meaning <i>actually</i> changed needs the full transcript.<div class="cav">Treat the count as beats to review, not confirmed breaches.</div></td><td class="n"><b class="cnt">24</b><span class="fl">in 10 edits</span></td><td class="n"><b class="cnt">24</b></td></tr>
+<tr class="gr-no"><td class="rid">R4.5</td><td><span class="grade gr-no">Not checkable</span></td>
+<td class="txt">One idea per beat.<div class="hist">Earlier text: f0cad6c: &lsquo;one idea per bite&rsquo;</div></td><td class="how">&ldquo;One idea&rdquo; is a judgement about content.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-no"><td class="rid">R4.6</td><td><span class="grade gr-no">Not checkable</span></td>
+<td class="txt">Ideas must be completed. e.g a question receives an answer</td><td class="how">Requires reading the surrounding transcript to know whether the idea closed.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="sec"><td colspan="6">5 &middot; Metrics &amp; Map Usage</td></tr>
+<tr class="gr-yes"><td class="rid">R5.1</td><td><span class="grade gr-yes">Decidable</span></td>
+<td class="txt">MAP synthetics are high prioirity. Always request one. <span class='vn'>(this text from 08-13 only; blank line 07-26&rarr;08-13)</span><div class="hist">Earlier text: f0cad6c/v02/v03: &lsquo;use a metric only if it adds something new&rsquo;</div></td><td class="how">Does the edit contain a beat with <code>archetype: MAP</code>? Fully decidable. Only scored from 08-13 07:34, when the rule gained text.<div class="cav">Separately: 16 edits cite R5.1 while it was blank. That is a false citation, not a breach &mdash; a blank rule cannot be broken.</div></td><td class="n"><b class="zero">0</b></td><td class="n"><b class="zero">0</b></td></tr>
+<tr class="gr-no"><td class="rid">R5.2</td><td><span class="grade gr-no">Not checkable</span></td>
+<td class="txt">Use a google map only if geography matters.</td><td class="how">&ldquo;Geography matters&rdquo; is a judgement about the brief. The GPS-signal reasoning the agent actually does under this ID isn't in the rule at all.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-part"><td class="rid">R5.3</td><td><span class="grade gr-part">Partial</span></td>
+<td class="txt">MAP durations need to be as long as possible &hellip; They need to cover <code>EVENT_ACTION</code>, <code>EVENT_TRIGGER</code> and <code>AFTERMATH</code>. <span class='vn'>(coverage clause added 08-27)</span><div class="hist">Earlier text: f0cad6c/v02/v03: &lsquo;metrics support claims&rsquo;</div></td><td class="how">The coverage clause is decidable: does some MAP beat's search window contain each EVENT_ACTION / EVENT_TRIGGER / AFTERMATH window? Scored from 08-27 only.<div class="cav">&ldquo;As long as possible&rdquo; has no ground truth and is not scored. The rule's own escape clause (extreme location changes) is a judgement, so some of these 8 may be legitimate.</div></td><td class="n"><b class="cnt">8</b><span class="fl">in 8 edits</span></td><td class="n"><b class="cnt">8</b></td></tr>
+<tr class="gr-part"><td class="rid">R5.4</td><td><span class="grade gr-part">Partial</span></td>
+<td class="txt">RECON_CAM_POSES/RECON_3D need true multi-viewpoint coverage &mdash; flag [JUDGMENT CALL] if unstated. <span class='vn'>(rewritten 08-26 into a permissive MAP rule &mdash; unscoreable after that)</span></td><td class="how">Beat requests a recon flag, no movement word anywhere in its text, and <code>flag</code> is not <code>[JUDGMENT CALL]</code>. Scored up to 08-26 only.<div class="cav">&ldquo;Movement stated&rdquo; is keyword-matched, so this is approximate.</div></td><td class="n"><b class="cnt">3</b><span class="fl">in 3 edits</span></td><td class="n"><b class="cnt">2</b></td></tr>
+<tr class="gr-yes"><td class="rid">R5.5</td><td><span class="grade gr-yes">Decidable</span></td>
+<td class="txt">Use the map to showt he location of key people. <span class='vn'>(added 08-27)</span></td><td class="how">Does each MAP beat's <code>tracked_subject</code> contain a person rather than only objects? Decidable from the field.</td><td class="n"><b class="cnt">6</b><span class="fl">in 6 edits</span></td><td class="n"><b class="cnt">6</b></td></tr>
+<tr class="sec"><td colspan="6">6 &middot; Structure &amp; Pacing</td></tr>
+<tr class="gr-yes"><td class="rid">R6.1</td><td><span class="grade gr-yes">Decidable</span></td>
+<td class="txt">Do not open with out-of-order soundbites, hooks or teasers<div class="hist">Earlier text: f0cad6c/v02: was R6.2's under-10s rule</div></td><td class="how">Beat 1 is a <code>SOUNDBITE</code>, or beat 1's <code>start_frame</code> is later than beat 2's (i.e. the film opens out of chronology).</td><td class="n"><b class="cnt">1</b><span class="fl">in 1 edits</span></td><td class="n"><b class="cnt">1</b></td></tr>
+<tr class="gr-part"><td class="rid">R6.2</td><td><span class="grade gr-part">Partial</span></td>
+<td class="txt">Open with stakes or a concrete scene in under 10 seconds. This doesn't need to come from the first 10s of the video.<div class="hist">Earlier text: f0cad6c/v02: &lsquo;keep one throughline&rsquo;</div></td><td class="how">Opening beat's <code>duration_seconds</code> &gt; 10.<div class="cav"><b>Reading-dependent.</b> If &ldquo;under 10 seconds&rdquo; means the beat, all 16 are breaches. If it means the stakes must <i>land</i> within 10s of the film starting, most are fine and the rule is just badly worded. This one number decides how bad the whole set looks.</div></td><td class="n"><b class="cnt">16</b><span class="fl">in 16 edits</span></td><td class="n"><b class="cnt">5</b></td></tr>
+<tr class="gr-no"><td class="rid">R6.3</td><td><span class="grade gr-no">Not checkable</span></td>
+<td class="txt">Keep one throughline - which answers the user's prompt.<div class="hist">Earlier text: f0cad6c/v02: &lsquo;cut to information density&rsquo;</div></td><td class="how">Whether an edit holds one throughline is a judgement about narrative, not a property of the JSON.<div class="cav">Cited 47 times, three edits use it as a per-beat inclusion badge, which is R9.1's job.</div></td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-no"><td class="rid">R6.4</td><td><span class="grade gr-no">Not checkable</span></td>
+<td class="txt">Cut to information density, not rhythm.<div class="hist">Earlier text: f0cad6c: &lsquo;separate data beats&rsquo;</div></td><td class="how">&ldquo;Information density&rdquo; has no measure in the data.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-yes"><td class="rid">R6.5</td><td><span class="grade gr-yes">Decidable</span></td>
+<td class="txt">Separate data beats with other content<div class="hist">Earlier text: f0cad6c/v02: &lsquo;maps cannot open&rsquo;</div></td><td class="how">Two adjacent beats both <code>MAP</code> or <code>METRIC</code>.<div class="cav">Zero found.</div></td><td class="n"><b class="zero">0</b></td><td class="n"><b class="zero">0</b></td></tr>
+<tr class="gr-yes"><td class="rid">R6.6</td><td><span class="grade gr-yes">Decidable</span></td>
+<td class="txt">Maps cannot open unless geography is the story.<div class="hist">Earlier text: f0cad6c/v02: &lsquo;never end on a map&rsquo;</div></td><td class="how">Beat 1 has <code>archetype: MAP</code>. Zero found, so the &ldquo;unless&rdquo; judgement never had to be made.</td><td class="n"><b class="zero">0</b></td><td class="n"><b class="zero">0</b></td></tr>
+<tr class="gr-yes"><td class="rid">R6.7</td><td><span class="grade gr-yes">Decidable</span></td>
+<td class="txt">Never end on a map.</td><td class="how">Last beat has <code>archetype: MAP</code>. <code>PROJECTION_MAP</code> is a separate archetype in the section-0 closed set and is not counted here.</td><td class="n"><b class="cnt">5</b><span class="fl">in 5 edits</span></td><td class="n"><b class="cnt">5</b></td></tr>
+<tr class="gr-yes"><td class="rid">R6.8</td><td><span class="grade gr-yes">Decidable</span></td>
+<td class="txt"><code>PROJECTION_MAP</code> are action replays. They either go after the real beat that has the same source frames, or at the end of the video <span class='vn'>(added 08-26)</span></td><td class="how">Either the PROJECTION_MAP is the last beat, or the beat before it is a real beat whose search window contains the replay's window. Both branches decidable.</td><td class="n"><b class="cnt">1</b><span class="fl">in 1 edits</span></td><td class="n"><b class="cnt">1</b></td></tr>
+<tr class="sec"><td colspan="6">7 &middot; Decision Reporting</td></tr>
+<tr class="gr-part"><td class="rid">R7.1</td><td><span class="grade gr-part">Partial</span></td>
+<td class="txt">Name rejected alternatives and why.<div class="hist">Earlier text: v02: singular wording</div></td><td class="how">Does the edit populate <code>rejected_alternative</code> on any beat at all? Scored per edit, not per decision.<div class="cav">Per-decision compliance is unscoreable &mdash; I can't know which decisions had a live alternative.</div></td><td class="n"><b class="cnt">5</b><span class="fl">in 5 edits</span></td><td class="n"><b class="cnt">5</b></td></tr>
+<tr class="gr-no"><td class="rid">R7.2</td><td><span class="grade gr-no">Not checkable</span></td>
+<td class="txt">Mark unresolved choices as [JUDGMENT CALL].</td><td class="how">Requires knowing a choice was unresolved. Only the presence of the flag is visible, never its absence-when-required.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-no"><td class="rid">R7.3</td><td><span class="grade gr-no">Not checkable</span></td>
+<td class="txt">Report if the transcript/narration makes a factual claim that the deterministic tracking/mask data contradicts or cannot confirm.</td><td class="how">Would need every beat's claims cross-referenced against <code>015_SAM3_masks/</code> per case. Possible in principle; not from the paper edit alone.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="sec"><td colspan="6">8 &middot; Graphics</td></tr>
+<tr class="gr-na"><td class="rid">R8.1</td><td><span class="grade gr-na">N/A</span></td>
+<td class="txt">Captions must not cover the subject/action and must stay in safe area.</td><td class="how">The beat schema has no caption field. Nothing the producer outputs can breach it.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="sec"><td colspan="6">9 &middot; Editorial</td></tr>
+<tr class="gr-no"><td class="rid">R9.1</td><td><span class="grade gr-no">Not checkable</span></td>
+<td class="txt">Every beat must have a strong reason to be included &hellip; if the answer to the brief will not change when you remove it, remove it.<div class="hist">Earlier text: carve-out added 08-13</div></td><td class="how">Requires re-answering the brief with and without each beat. Pure editorial judgement.<div class="cav">Cited 80 times, always inverted &mdash; as a reason to keep rather than a test to remove.</div></td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="sec"><td colspan="6">10 &middot; Analysis</td></tr>
+<tr class="gr-yes"><td class="rid">R10.1</td><td><span class="grade gr-yes">Decidable</span></td>
+<td class="txt">Audio claims should be backed-up by video proof. Request Mask overlays &hellip; flag: [NEEDS VISUAL REVIEW] on this beat</td><td class="how">Beat populates <code>tracked_subject</code> (i.e. it did request the overlay) but <code>flag</code> is not <code>[NEEDS VISUAL REVIEW]</code>. The rule names the exact flag, so this is decidable.<div class="cav">41 of the 63 carry no flag at all; the other 22 carry <code>[JUDGMENT CALL]</code> instead, and <code>flag</code> holds only one value &mdash; a schema limit, not necessarily disobedience.</div></td><td class="n"><b class="cnt">63</b><span class="fl">in 34 edits</span></td><td class="n"><b class="cnt">40</b></td></tr>
+<tr class="gr-no"><td class="rid">R10.2</td><td><span class="grade gr-no">Not checkable</span></td>
+<td class="txt">Use a metric only if it adds something new.</td><td class="how">&ldquo;Adds something new&rdquo; relative to the rest of the edit is a judgement.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-no"><td class="rid">R10.3</td><td><span class="grade gr-no">Not checkable</span></td>
+<td class="txt">Metrics support claims; they do not replace sourcing.</td><td class="how">Judgement about whether sourcing was displaced.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+<tr class="gr-yes"><td class="rid">R10.4</td><td><span class="grade gr-yes">Decidable</span></td>
+<td class="txt">Physics-based analysis (speed, distance, etc) requires depth, so you must demand 3D recon to solve this</td><td class="how">Beat text contains speed / distance / trajectory / physics language but <code>requested_flags</code> lacks <code>RECON_3D</code>.<div class="cav">Zero found &mdash; every physics claim did request the recon.</div></td><td class="n"><b class="zero">0</b></td><td class="n"><b class="zero">0</b></td></tr>
+<tr class="gr-no"><td class="rid">R10.5</td><td><span class="grade gr-no">Not checkable</span></td>
+<td class="txt">Metrics can and will support the answer to the prompt. use many, but they must satisfy R10.2 and R10.3<div class="hist">Earlier text: truncated 08-13</div></td><td class="how">&ldquo;Use many&rdquo; sets no threshold, and it defers to two unscoreable rules.</td><td class="n">&mdash;</td><td class="n">&mdash;</td></tr>
+</tbody></table></div>
+</section>
+
+<footer>
+<p><b>Scope.</b> 55 paper edits and drafts with surviving JSON, 08-08 to 08-30 2026. Each scored against the constitution version live on its file mtime. Rules are only scored for the window in which their current text applied &mdash; R5.1 from 08-13, R5.3's coverage clause and R5.5 from 08-27, R6.8 from 08-26, R5.4 up to 08-26 &mdash; so a rule's count is never inflated by dates when it said something else, or nothing.</p>
+<p><b>&ldquo;Broken &amp; uncited&rdquo;</b> counts breaches in edits where the rule ID appears nowhere in the file: the rule was neither followed nor considered. Where the gap between the two columns is small, the agent cited the rule and broke it anyway.</p>
+<p><b>Not counted as breaches.</b> 16 edits cite R5.1 between 08-08 and 08-10, while it was a blank line with no text. A blank rule cannot be violated, so those are false citations rather than breaches, and appear in no count here.</p>
+</footer>
+</div>

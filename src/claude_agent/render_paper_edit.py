@@ -9,7 +9,7 @@ from A_Config import MASK_SEARCH_HANDLE_S
 # Frames at which SAM3 offloads video+state to host RAM and gets unreliable
 # (see tracking_windows/_merge_spans below). A merge that would push a span
 # past this is refused rather than handed to the tracker.
-SAM3_MAX_TRACK_FRAMES = 650
+SAM3_MAX_TRACK_FRAMES = 1400
 
 # The closed set of 8 from CONSTITUTION.md section 0, verbatim -- anything a beat
 # carries that isn't a key here is an invalid archetype and gets raised as an error
@@ -23,7 +23,7 @@ ARCHETYPE_LABELS = {
     "SOUNDBITE": "Soundbite",
     "MAP": "Map",
     "METRIC": "Metric",
-    "PROJECTION_MAP": "Projection map",
+    "PROJECTION": "Projection",
     "INTERVIEW": "Interview",  # legacy alias for SOUNDBITE
 }
 
@@ -191,15 +191,15 @@ RECON_FLAG_KINDS = {"RECON_CAM_POSES": "MAP", "RECON_3D": "EVENT"}
 
 
 def wants_projection_map(beat: dict) -> bool:
-    """Is this beat a projection map? PROJECTION_MAP is BOTH an archetype (the
+    """Is this beat a projection map? PROJECTION is BOTH an archetype (the
     closed set in CONSTITUTION.md section 0, which is how W_video_editor decides
     what clip to build) and a menu flag the notebook gates its rendering cell on,
     so the Producer can legitimately express it either way. Every test in this
     file goes through here rather than looking in one field only -- checking
-    requested_flags alone silently dropped every PROJECTION_MAP-archetype beat,
+    requested_flags alone silently dropped every PROJECTION-archetype beat,
     flag off and no RECON_3D."""
-    return (beat.get("archetype") == "PROJECTION_MAP"
-            or "PROJECTION_MAP" in (beat.get("requested_flags") or []))
+    return (beat.get("archetype") == "PROJECTION"
+            or "PROJECTION" in (beat.get("requested_flags") or []))
 
 
 def beat_recon_flags(beat: dict) -> set[str]:
@@ -278,10 +278,10 @@ def _beat_flags(beat: dict, fps: float, gps_signal: str | None, errors: list[str
                 if f in requested:
                     flags.add(f)
 
-    # PROJECTION_MAP -- no rule yet on when it's needed, trust the LLM on
+    # PROJECTION -- no rule yet on when it's needed, trust the LLM on
     # that. But it's a novel view of a RECON_3D, so it always needs one --
     # beat_recon_flags below is what actually adds that RECON_3D.
-    # wants_projection_map, not `in requested`: the archetype is the Producer's
+    # wants_projection, not `in requested`: the archetype is the Producer's
     # usual way of asking for one (see CONSTITUTION.md section 0).
     if wants_projection_map(beat):
         if beat.get("archetype") == "MAP":
@@ -289,15 +289,15 @@ def _beat_flags(beat: dict, fps: float, gps_signal: str | None, errors: list[str
             # RECON_3D here for the projection to be a novel view of. Not something
             # we can correct -- the Producer has to split it into its own beat.
             errors.append(
-                f"MAP beat {beat_id} requests PROJECTION_MAP, but a MAP beat only "
+                f"MAP beat {beat_id} requests PROJECTION, but a MAP beat only "
                 f"carries RECON_CAM_POSES and a projection map needs a RECON_3D -- "
-                f"Producer must move PROJECTION_MAP to its own beat."
+                f"Producer must move PROJECTION to its own beat."
             )
         else:
-            flags.add("PROJECTION_MAP")
+            flags.add("PROJECTION")
             if beat.get("search_window_start_seconds") is None or beat.get("search_window_end_seconds") is None:
                 errors.append(
-                    f"Beat {beat_id} needs RECON_3D (for PROJECTION_MAP) but has no "
+                    f"Beat {beat_id} needs RECON_3D (for PROJECTION) but has no "
                     f"search_window_start_seconds/search_window_end_seconds -- Producer must set them."
                 )
 

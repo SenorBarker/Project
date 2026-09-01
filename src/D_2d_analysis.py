@@ -251,7 +251,12 @@ def analysis_2d_tracking_recovery(paper_edit_json_path):
             )
 
     analysis_2d_for_decisions = {}
-    track_dirs = sorted(p for p in masks_root.iterdir() if p.is_dir() and not p.name.startswith("_"))
+    # No masks folder at all = tracking never ran for this case/experiment. That is
+    # the same answer as "ran and found nothing", not a crash.
+    if not masks_root.exists():
+        print(f"no masks dir {masks_root} -- tracking has not run for this experiment")
+    track_dirs = sorted(p for p in (masks_root.iterdir() if masks_root.exists() else [])
+                        if p.is_dir() and not p.name.startswith("_"))
     dirs_by_slug = {}
     for track_dir in track_dirs:
         dirs_by_slug.setdefault(track_dir.name.rsplit("-", 1)[0], []).append(track_dir)
