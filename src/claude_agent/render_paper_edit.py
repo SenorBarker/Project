@@ -587,6 +587,21 @@ def beat_key(beat: dict) -> str:
     return beat["beat_id"][0]
 
 
+def select_subjects(by_subject: dict, beat: dict) -> dict:
+    '''Filter subjects_positions / subjects_real_pos / subjects_latlon down to the
+    subjects this beat's tracked_subject named. Derived from the beat every call --
+    the revision rewrites tracked_subject after recon_jobs was built.
+
+    Matching is not a plain `in`: gemvsSAM merges a person's tracks into one
+    "person-B" entry, but a noun phrase keeps the tracker's per-instance keys
+    ("silver_car-01".."-04"), so the instance suffix comes off before comparing.'''
+    from run_models.A_ROBOFLOW_SAM3 import _slugify_subject
+    wanted = {entry["gem_person_id"] if isinstance(entry, dict) else _slugify_subject(entry)
+              for entry in (beat.get("tracked_subject") or [])}
+    return {k: v for k, v in by_subject.items()
+            if k in wanted or k.rsplit("-", 1)[0] in wanted}
+
+
 def match_revision_beat_ids(revision_path=None, draft_path=None):
     '''Force the revision's beat_ids back onto the draft's. beat_key (beat_id[0])
     names every asset on disk, and those were built from the draft -- a beat the

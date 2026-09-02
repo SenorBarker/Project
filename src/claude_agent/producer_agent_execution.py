@@ -14,7 +14,7 @@ from claude_agent_sdk import (
     ThinkingConfigEnabled,
     ToolUseBlock,
 )
-from A_Config import REPO_ROOT, case_name, query_dir, agent_p_output_dir, to_repo_path, pass_num, case_dir, asset_name
+from A_Config import REPO_ROOT, case_name, query_dir, agent_p_output_dir, to_repo_path, pass_num, case_dir, asset_name, asr_transcript_path
 PROJECT_ROOT = REPO_ROOT
 # cwd must be the repo root (where .claude/ lives) -- Claude Code resolves
 # every relative tool path against the project root it finds by walking up
@@ -187,7 +187,7 @@ def run_producer_agent(task_prompt: str, mode: str = "revision"):
 def build_producer_prompt_draft1(brief: str, analysis_2d_for_decisions: dict, producer_flags: dict) -> str:
     description_text = (query_dir() / f"{case_name()}_description.txt").read_text(encoding="utf-8")
     objects_text = (query_dir() / f"{case_name()}_objects.txt").read_text(encoding="utf-8")
-    transcript_text = (case_dir() / "013_ASR_outputs"/ f"{asset_name()}_transcript_asr.txt").read_text(encoding="utf-8")
+    transcript_text = asr_transcript_path().read_text(encoding="utf-8")
 
     places_text  =   (query_dir() / f"{case_name()}_places.txt").read_text(encoding="utf-8")
     people_text  =   (query_dir() / f"{case_name()}_people.json").read_text(encoding="utf-8")

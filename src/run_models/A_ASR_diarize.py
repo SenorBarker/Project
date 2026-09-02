@@ -21,11 +21,15 @@ transcribe_and_diarize().
     set_case("503_EGO_noodles_sound")
     transcribe_and_diarize()
 
-Outputs, all named for the asset:
-    <asset>_audio16k.wav        mono 16 kHz -- what both models actually read
-    <asset>_asr_words.json      every word with start/end/probability + speaker
-    <asset>_diarization.rttm    pyannote's turns, standard RTTM
-    <asset>_transcript_asr.txt  the readable one: **MM:SS-MM:SS** [SPEAKER_00]: ...
+Outputs, all under 013_ASR_outputs and all named for the *case*, not the
+experiment -- this stage reads the source video and nothing an experiment
+changes, so it runs once per case and every experiment on that case reads the
+same files:
+    <case>_audio16k.wav        mono 16 kHz -- what both models actually read
+    <case>_asr_words.json      every word with start/end/probability + speaker
+    <case>_diarization.rttm    pyannote's turns, standard RTTM
+    <case>_audio_events.json   AudioSet tags for the non-speech sound
+    <case>_transcript_asr.txt  the readable one: **MM:SS-MM:SS** [SPEAKER_00]: ...
 """
 
 import ctypes
@@ -44,7 +48,7 @@ import torch
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from A_Config import asr_dir, asset_name, source_video_path
+from A_Config import asr_dir, asr_transcript_path, case_name, source_video_path
 
 # Whisper: large-v3 fits fp16 on the 3090 with room for pyannote afterwards
 # (they are loaded in sequence, not together -- see transcribe_and_diarize).
@@ -331,24 +335,27 @@ def _preload_cuda_libs():
                 pass
 
 
+# All five are named for the case, never the experiment -- see the note on
+# asr_transcript_path in A_Config. Re-running under a second experiment then
+# finds the existing files and reuses them.
 def audio_path():
-    return asr_dir() / f"{asset_name()}_audio16k.wav"
+    return asr_dir() / f"{case_name()}_audio16k.wav"
 
 
 def words_path():
-    return asr_dir() / f"{asset_name()}_asr_words.json"
+    return asr_dir() / f"{case_name()}_asr_words.json"
 
 
 def rttm_path():
-    return asr_dir() / f"{asset_name()}_diarization.rttm"
+    return asr_dir() / f"{case_name()}_diarization.rttm"
 
 
 def events_path():
-    return asr_dir() / f"{asset_name()}_audio_events.json"
+    return asr_dir() / f"{case_name()}_audio_events.json"
 
 
 def transcript_path():
-    return asr_dir() / f"{asset_name()}_transcript_asr.txt"
+    return asr_transcript_path()
 
 
 def extract_audio(overwrite=False):

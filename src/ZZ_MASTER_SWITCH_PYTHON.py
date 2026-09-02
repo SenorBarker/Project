@@ -1026,7 +1026,7 @@ def _wanted_subjects(beat):
 # ---------------------------------------------------------------------------
 # RENDERING -- projection
 # ---------------------------------------------------------------------------
-def projection(margin=0.3, extra_distance_margin=0.0, conf_percentile=30, splat_radius=3):
+def projection(margin=0.3, extra_distance_margin=0.0, conf_percentile=30, splat_radius=3, beat ):
     """Cell 81 -- projection mapping, one sequence per EVENT recon.
 
     Knobs are in raw VGGT-O model units, no metric/GPS needed:
@@ -1172,17 +1172,17 @@ def animated_map(gif=True, mp4=None):
     Duration comes from the beat we pass in, so two MAP beats get two different-length
     animations instead of sharing one."""
     import Rendering.R_map_animator
+    from render_paper_edit import select_subjects
     config_if_needed()
     S["flags"]["GOOGLE_MAP"] = True
     beats_by_key = revised_beats()
 
     for job in jobs_of(archetype="MAP", flag="GOOGLE_MAP"):
         beat = beats_by_key.get(job["beat_key"], job["beat"])
-        wanted = _wanted_subjects(beat)
         subject_traces = [
             {"coords": latlons, "trail_color": _DEFAULT_PALETTE[i % len(_DEFAULT_PALETTE)]}
-            for i, (slug, latlons) in enumerate(job.get("subjects_latlon", {}).items())
-            if slug in wanted
+            for i, latlons in enumerate(
+                select_subjects(job.get("subjects_latlon", {}), beat).values())
         ]
         Rendering.R_map_animator.main(
             traces=[{"coords": job["cam_latlons"], "trail_color": "#3498db"},  # cameras
@@ -1256,6 +1256,7 @@ def bev_trace_overlay():
     still; n_frames comes from the beat we pass in (duration_seconds * fps), and
     frames land in bev_trace_frames_<beat_key>."""
     from P_trace_overlayer import BEV_trace_overlay as _overlay
+    from render_paper_edit import select_subjects
     beats_by_key = revised_beats()
 
     for job in jobs_of(archetype="MAP", flag="BEV_MAP"):
@@ -1263,8 +1264,7 @@ def bev_trace_overlay():
             continue
         all_positions = job.get("subjects_real_pos") or job.get("subjects_positions") or {}
         beat = beats_by_key.get(job["beat_key"], job["beat"])
-        wanted = _wanted_subjects(beat)
-        subject_positions = {k: v for k, v in all_positions.items() if k in wanted}
+        subject_positions = select_subjects(all_positions, beat)
         _overlay(
             job["recon"],
             job["extra_indices"],

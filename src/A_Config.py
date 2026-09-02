@@ -91,6 +91,12 @@ def source_dir(): return case_dir() / "010_source"
 def source_video_path(): return next(source_dir().glob("*.mp4"))
 def query_dir(): return case_dir() / "012_Gemini_outputs"
 def asr_dir(): return case_dir() / "013_ASR_outputs"
+
+# The ASR stage reads the source video and nothing else, so its outputs belong to
+# the case, not to an experiment -- named with case_name() rather than
+# asset_name() so every experiment on a case shares the one transcript instead of
+# paying for whisper+pyannote+AST again and leaving a duplicate set behind.
+def asr_transcript_path(): return asr_dir() / f"{case_name()}_transcript_asr.txt"
 def agent_p_output_dir(): return _with_experiment(case_dir() / "012_agent_p_output")
 def yolo_masks_dir(): return _with_experiment(case_dir() / "015_YOLO")
 def sam3_masks_dir(): return _with_experiment(case_dir() / "015_SAM3_masks")

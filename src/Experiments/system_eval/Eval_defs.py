@@ -8,7 +8,21 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
-BIN_S = 1.0 
+from collections import Counter
+
+
+BIN_S = 1.0
+# One knob for every bit of text in every figure in this module: titles, axis
+# labels, tick labels, legends. Set it before plotting, or call set_font_size().
+FONT_SIZE = 12
+plt.rcParams.update({"font.size": FONT_SIZE})
+
+
+def set_font_size(size):
+    """Resize every bit of text in this module's figures."""
+    global FONT_SIZE
+    FONT_SIZE = size
+    plt.rcParams.update({"font.size": size})
 project_root = Path.cwd()
 #----------VS ME-------------ALIVE
 from B_video_processing import video_duration_sec
@@ -452,7 +466,7 @@ ANON = {"George": "A1", "Tamara": "A2", "Vuk": "A3", "stefanos": "A4",
 
 
 def timeline_agreement(case_name, edges, tracks, GT_edit=None, votes=None,
-                       hatch=None, fname=None):
+                       hatch=None, fname=None, xlim=None):
     """One band per editor on a shared time axis. If GT_edit is given, every
     boolean track except the reference is coloured by agreement with it: green
     = kept and in the reference, red = kept but not, grey = missed.
@@ -477,7 +491,7 @@ def timeline_agreement(case_name, edges, tracks, GT_edit=None, votes=None,
     if has_votes:
         axes[0].stairs(votes, edges, fill=True, color="#2a78d6")
         axes[0].set_ylim(0, 1)
-        axes[0].set_ylabel("P(include)", fontsize=8)
+        axes[0].set_ylabel("P(include)")
 
     track_axes = axes[has_votes:]
     axes[0].set_title(case_name)
@@ -505,9 +519,11 @@ def timeline_agreement(case_name, edges, tracks, GT_edit=None, votes=None,
         ax.set_ylim(0, 1)
         ax.set_yticks([])
         ax.set_ylabel(ANON.get(label, label), rotation=0,
-                      ha="right", va="center", fontsize=8)
+                      ha="right", va="center")
 
     axes[-1].set_xlabel("time (s)")
+    if xlim is not None:                  # sharex: one set is enough
+        axes[-1].set_xlim(*xlim)
 
     legend_handles = []
     if GT_edit is not None:
@@ -518,9 +534,9 @@ def timeline_agreement(case_name, edges, tracks, GT_edit=None, votes=None,
         legend_handles.append(Patch(facecolor="none", edgecolor="black",
                                     hatch="///", label="Marked critical"))
     if legend_handles:
-        fig.legend(handles=legend_handles,
-                   loc="lower center", bbox_to_anchor=(0.5, -.1),
-                   ncol=3, fontsize=7, frameon=False)
+        fig.legend(handles=legend_handles,                  # clear of the x label
+                   loc="upper center", bbox_to_anchor=(0.5, -0.06),
+                   ncol=3, frameon=False)
 
     if fname:
         outdir = Path(REPO_ROOT) / "writing" / "Figures" / "sys_eval"
@@ -547,8 +563,10 @@ def labels_dir():
 
 def load_labels():
 
-    """Every annotator's label file for one case, one dict each."""
-    files = sorted(labels_dir().glob("*.json"))
+    """Every annotator's label file for one case, one dict each.
+    GT paper edits share this directory but aren't annotations -- skipped."""
+    files = [f for f in sorted(labels_dir().glob("*.json"))
+             if not f.name.endswith("_GT_paper_edit.json")]
     if not files:
         raise FileNotFoundError(f"{labels_dir()} is empty")
     return [json.loads(f.read_text()) for f in files]
@@ -637,3 +655,287 @@ def _dilate1(m):
     out[1:] |= m[:-1]
     out[:-1] |= m[1:]
     return out
+
+
+#--------------------ablations
+from collections import Counter
+
+
+def repeated_frame_counts(paper_edit_json_path):
+    """Frame reuse across a paper edit's real beats.
+
+    Returns (unique_frames, repeated_frames) where repeated_frames counts each
+    frame once per *extra* appearance: in twice -> 1, in three times -> 2.
+    """
+    paper_edit = json.loads(Path(paper_edit_json_path).read_text())
+    counts = Counter()
+    for beat in paper_edit["beats"]:
+        s, e = beat.get("start_frame"), beat.get("end_frame")
+        if s is None or e is None:
+            continue
+        counts.update(range(int(s), int(e) + 1))
+    total = sum(counts.values())
+    unique = len(counts)
+    print("Repeated frames" ,total - unique,"\n total frames",unique, "\n %repeated:" , 100*(total - unique) / unique    )
+    return total - unique, unique, 100*(total - unique) / unique   
+
+
+def repeated_frame_pairs(paper_edit_json_path):
+    """[(beat_id_a, beat_id_b, n_shared_frames), ...] for overlapping real beats."""
+    paper_edit = json.loads(Path(paper_edit_json_path).read_text())
+    spans = [(b["beat_id"][0], int(b["start_frame"]), int(b["end_frame"]))
+             for b in paper_edit["beats"]
+             if b.get("start_frame") is not None and b.get("end_frame") is not None]
+    out = []
+    for i, (id_a, s_a, e_a) in enumerate(spans):
+        for id_b, s_b, e_b in spans[i + 1:]:
+            n = min(e_a, e_b) - max(s_a, s_b) + 1
+            if n > 0:
+                out.append((id_a, id_b, n))
+    return out
+
+
+def GT_paper_edit(case_name, brief=None, n_empty=2, n_map=1):
+    """My reference cut, written out in paper-edit shape so it can be scored by
+    the same defs as a machine run. Beat bounds come straight from the CSV's own
+    src_in_frame/src_out_frame -- no seconds round-trip. Every other beat field
+    is null: this carries the cut, not the reasoning. After the cut come
+    n_empty fully-null beats, then n_map synthetic MAP beats (archetype and
+    requested_flags set, frames null), all numbered in sequence with the rest.
+
+    Writes 100_labels/<csv stem>_GT_paper_edit.json and returns the path."""
+    csv_path = GT_cut_path(case_name)
+    df = pd.read_csv(csv_path).sort_values("src_in_frame").reset_index(drop=True)
+
+    beats = [{
+        "archetype": None,
+        "order": i + 1,
+        "beat_id": [f"beat-{i + 1:02d}"],
+        "segment_type": None,
+        "duration_seconds": None,
+        "source": None,
+        "start_frame": int(row.src_in_frame),
+        "end_frame": int(row.src_out_frame),
+        "lead_in_seconds": None,
+        "search_window_start_seconds": None,
+        "search_window_end_seconds": None,
+        "requested_flags": None,
+        "quote": None,
+        "rationale": None,
+        "rejected_alternative": None,
+        "flag": None,
+        "tracked_subject": None,
+    } for i, row in df.iterrows()]
+
+    for i in range(len(df), len(df) + n_empty + n_map):
+        beat = {k: None for k in beats[0]}
+        beat["order"] = i + 1
+        beat["beat_id"] = [f"beat-{i + 1:02d}"]
+        if i >= len(df) + n_empty:          # the MAP beats come last
+            beat["archetype"] = "MAP"
+            beat["requested_flags"] = ["BEV_MAP", "RECON_CAM_POSES", "TRACKING"]
+        beats.append(beat)
+
+    out_path = csv_path.with_name(f"{csv_path.stem}_GT_paper_edit.json")
+    out_path.write_text(json.dumps(
+        {"case_name": case_name, "brief": brief, "beats": beats}, indent=2))
+    print(f"{case_name}: {len(beats)} beats -> {out_path}")
+    return out_path
+
+
+def _map_beats(paper_edit_json_path):
+    """MAP beats of one paper edit, in file order. Looked up by archetype --
+    beat_id and order don't survive between two independently written edits."""
+    beats = json.loads(Path(paper_edit_json_path).read_text())["beats"]
+    return [b for b in beats if b.get("archetype") == "MAP"]
+
+
+def _map_span(beat):
+    """A MAP beat's requested span in seconds. MAP beats are synthetic and carry
+    no frames, so the search window is the only span they have."""
+    s = beat.get("search_window_start_seconds")
+    e = beat.get("search_window_end_seconds")
+    return None if s is None or e is None else (float(s), float(e))
+
+
+def _subject_keys(beat):
+    """Tracked subjects of one beat as comparable keys: the Gemini person id
+    where there is one, else the descriptor/plain-string text lowercased."""
+    keys = set()
+    for subj in beat.get("tracked_subject") or []:
+        if isinstance(subj, dict):
+            pid = subj.get("gem_person_id") or subj.get("person_id")
+            keys.add(pid or str(subj.get("descriptor", "")).strip().lower())
+        else:
+            keys.add(str(subj).strip().lower())
+    return keys - {""}
+
+
+SUBJECT_STOPWORDS = {"the", "a", "an", "his", "her", "their", "with", "in", "on",
+                     "of", "and", "wearing", "seen", "person", "man", "woman"}
+
+
+def _match_subjects(keys_ref, keys_sys):
+    """Which subjects the two beats agree on. Gemini person ids must match
+    exactly; free text is written independently by each editor ("silver car" vs
+    "the silver sedan") so it matches on a shared content word instead.
+    Returns (n shared, n unique across both)."""
+    def words(k):
+        return {w for w in k.replace(",", " ").split() if w not in SUBJECT_STOPWORDS}
+
+    ref_ids = {k for k in keys_ref if k.startswith("person-")}
+    sys_ids = {k for k in keys_sys if k.startswith("person-")}
+    shared = len(ref_ids & sys_ids)
+
+    free_sys = [k for k in keys_sys if not k.startswith("person-")]
+    for key_ref in (k for k in keys_ref if not k.startswith("person-")):
+        hit = next((k for k in free_sys if words(key_ref) & words(k)), None)
+        if hit is not None:
+            free_sys.remove(hit)
+            shared += 1
+    return shared, len(keys_ref) + len(keys_sys) - shared
+
+
+def _pair_map_beats(beats_ref, beats_sys):
+    """(ref beat, sys beat) pairs, matched on greatest span overlap and falling
+    back to file order. Unmatched beats on either side pair with {}."""
+    free = list(range(len(beats_sys)))
+    pairs = []
+    for beat_ref in beats_ref:
+        span_ref = _map_span(beat_ref)
+        best, best_ov = None, 0.0
+        for j in free:
+            span_sys = _map_span(beats_sys[j])
+            if span_ref and span_sys:
+                ov = min(span_ref[1], span_sys[1]) - max(span_ref[0], span_sys[0])
+                if ov > best_ov:
+                    best, best_ov = j, ov
+        if best is None and free:
+            best = free[0]
+        if best is not None:
+            free.remove(best)
+        pairs.append((beat_ref, beats_sys[best] if best is not None else {}))
+    pairs += [({}, beats_sys[j]) for j in free]      # MAP beats only the system has
+    return pairs
+
+
+def compare_map_beats(paper_edit_ref, paper_edits_sys, label_a="GT",
+                      label_b="System", case_name=None, fname=None, edges=None,
+                      pad_s=10.0, **plot_kw):
+    """MAP beats of one or more system edits, each compared against the same
+    reference edit. paper_edits_sys takes a single path, a sequence of paths,
+    or {label: path}. label_b names them: one string for a single edit, or one
+    string per edit for a sequence -- pass a single string with several edits
+    and they fall back to their experiment directory names.
+
+    MAP beats are matched by archetype and greatest span overlap -- never by
+    beat_id or order, which are independent between two edits. One row per
+    edit: its own beat id, span length and subject count, alongside the
+    pair's overlap, span IoU, shared and unique subject counts. Draws each
+    pair's spans as bars and returns the DataFrame."""
+    if isinstance(paper_edits_sys, dict):
+        edits = list(paper_edits_sys.items())
+    else:
+        paths = ([paper_edits_sys] if isinstance(paper_edits_sys, (str, Path))
+                 else list(paper_edits_sys))
+        labels = [label_b] if isinstance(label_b, str) else list(label_b)
+        assert len(labels) == len(paths), (
+            f"label_b has {len(labels)} label(s) for {len(paths)} edits -- "
+            f"pass one per edit, e.g. label_b=('System: ablation', 'System: full')")
+        edits = list(zip(labels, paths))
+
+    beats_ref = _map_beats(paper_edit_ref)
+    scored = {}            # MAP n -> [(label, row) ...], the reference row first
+    bars = {}              # MAP n -> [(ylabel, span, span to colour against)]
+    for label_sys, path_sys in edits:
+        for n, (beat_ref, beat_sys) in enumerate(
+                _pair_map_beats(beats_ref, _map_beats(path_sys)), start=1):
+            span_ref, span_sys = _map_span(beat_ref), _map_span(beat_sys)
+            keys_ref, keys_sys = _subject_keys(beat_ref), _subject_keys(beat_sys)
+            n_shared, n_unique = _match_subjects(keys_ref, keys_sys)
+
+            if span_ref and span_sys:
+                overlap = max(0.0, min(span_ref[1], span_sys[1]) - max(span_ref[0], span_sys[0]))
+                union = max(span_ref[1], span_sys[1]) - min(span_ref[0], span_sys[0])
+                iou = overlap / union if union else np.nan
+            else:
+                overlap, iou = np.nan, np.nan
+
+            # one row per system: the reference is a column, not a row of its own
+            scored.setdefault(n, []).append({
+                "MAP": n, "editor": label_sys,
+                f"{label_a} subjects": len(keys_ref),
+                "Subjects": len(keys_sys), "Shared": n_shared,
+                "Total": n_unique, "Overlap s": overlap,
+                "Span IoU": iou,
+            })
+            bars.setdefault(n, [(f"{label_a} MAP {n}", span_ref, None)])
+            bars[n].append((label_sys, span_sys, span_ref))
+
+    rows = [row for n in sorted(scored) for row in scored[n]]
+    df = pd.DataFrame(rows)
+    for col in df.columns:                 # whole seconds shouldn't print as 12.0
+        if df[col].dtype.kind == "f" and (df[col].dropna() % 1 == 0).all():
+            df[col] = df[col].astype("Int64")
+    if len(bars) == 1:
+        df = df.drop(columns="MAP")        # only one MAP beat: the column says nothing
+    if df.empty:
+        print("no MAP beats in either edit")
+        return df
+
+    if edges is None and case_name:        # same grid the rest of the notebook uses
+        try:
+            set_case(case_name)
+            edges = time_grid(case_name, labels=load_labels())
+        except Exception as e:
+            print(f"{case_name}: no time grid ({e}) -- drawing spans on their own axis")
+
+    if edges is not None:      # same figure as every other track in the notebook
+        tracks = {label_a: spans_to_mask(
+            [s for s in (_map_span(b) for b in beats_ref) if s], edges)}
+        for label_sys, path_sys in edits:
+            tracks[label_sys] = spans_to_mask(
+                [s for s in (_map_span(b) for b in _map_beats(path_sys)) if s], edges)
+        # MAP beats are seconds long on a video that runs minutes -- crop to them
+        marked = [t for m in tracks.values() for t in edges[:-1][m]]
+        xlim = ((max(edges[0], min(marked) - pad_s), min(edges[-1], max(marked) + pad_s))
+                if marked else None)
+        timeline_agreement(f"{case_name or ''} MAP beats".strip(), edges, tracks,
+                           GT_edit=tracks[label_a], fname=fname, xlim=xlim,
+                           **plot_kw)      # font sizes etc. live in one place only
+        return df
+
+    flat = [bar for n in sorted(bars) for bar in bars[n]]
+    fig, ax = plt.subplots(figsize=(11, 1.2 + 0.4 * len(flat)))
+    for k, (ylabel, span, ref) in enumerate(flat):
+        if ref is None:                              # the reference's own row
+            if span:
+                ax.barh(k, span[1] - span[0], left=span[0], height=0.3, color=REF_C)
+            continue
+        # every system row is coloured by agreement, same scheme as the timelines
+        cuts = sorted({*(span or ()), *ref})
+        for lo, hi in zip(cuts, cuts[1:]):
+            mid = (lo + hi) / 2
+            in_sys = span is not None and span[0] <= mid <= span[1]
+            in_ref = ref[0] <= mid <= ref[1]
+            colour = TP_C if in_sys and in_ref else FP_C if in_sys else FN_C
+            ax.barh(k, hi - lo, left=lo, height=0.6, color=colour)
+    ax.set_yticks(range(len(flat)))
+    ax.set_yticklabels([b[0] for b in flat])
+    ax.invert_yaxis()
+    ax.set_xlabel("time (s)")
+    ax.set_title(f"{case_name or ''} MAP beat spans".strip())
+    ax.legend(handles=[Patch(color=TP_C, label=f"in both"),
+                       Patch(color=FP_C, label=f"in system, not {label_a}"),
+                       Patch(color=FN_C, label="missed")],
+              frameon=False, ncol=3, loc="upper right")
+
+    if fname:
+        outdir = Path(REPO_ROOT) / "writing" / "Figures" / "sys_eval"
+        outdir.mkdir(parents=True, exist_ok=True)
+        fig.savefig(outdir / fname, dpi=200, bbox_inches="tight")
+        print(f"saved {outdir / fname}")
+    plt.show()
+    return df
+
+

@@ -45,6 +45,9 @@ def load_SAM_dets(raw_detection_rows=None, SAM_dets_path=None):
     if SAM_dets_path is None:
         import A_Config
         SAM_dets_path = A_Config.sam3_masks_dir() / "detections.csv"
+    if not Path(SAM_dets_path).exists():
+        print(f"No SAM3 tracking found at {SAM_dets_path} -- continuing with no SAM dets.")
+        return []
     with open(SAM_dets_path, newline="") as f:
         return list(csv.DictReader(f))
 

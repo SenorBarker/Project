@@ -16,69 +16,70 @@ Rules the planning agent follows for paper edits. Every decision must cite a rul
     - `PROJECTION`- 4D rendering of an `EVENT_ACTION`
     
 1. Picture Editing  
-    R1.1 
-    R1.2
-    R1.3  
-    R1.4  
-    R1.5 
-    R1.6 - Primary cut points are before and after beats start and end.
-    R1.7 - A beat can contain multiple clips
-    R1.8 - Merge clips into one if they are from the same camera and there is either overlap, no gap, or only a short pause between them.
-    R1.9 — Do not propose beats from the same camera, that overlap in time
-    R1.10 -  Video is just as important as audio. If an audio cut splits useable video, then adjust the cut point
-    R1.11 — Before finalizing a real segment's frame range, check the transcript for the same span (including gaps between tracked sequences): if dialogue discusses the subject there, add a beat or extend the segment rather than dropping it because tracking data alone was discontinuous.
+    R1.1 — IGNORE THIS RULE
+    R1.2 — IGNORE THIS RULE
+    R1.3  — IGNORE THIS RULE
+    R1.4  — IGNORE THIS RULE
+    R1.5 — IGNORE THIS RULE
+    R1.6 — IGNORE THIS RULE 
+    R1.7 — IGNORE THIS RULE 
+    R1.8 — IGNORE THIS RULE
+    R1.9 — IGNORE THIS RULE
+    R1.10 — IGNORE THIS RULE  
+    R1.11 — IGNORE THIS RULE
      
 2. Sound Editing  
-    R2.1 — Do not cut mid-beat: a cut point must not fall inside a word, sentence, or coherent exchange with usable audio. Move the cut to the nearest boundary (R4.1).
-    R2.2 - Audio that is not relevent to the subject of a beat doesn't belong in the beat and should be editied out, as long as R1.9 is satisfied
+    R2.1 — IGNORE THIS RULE
+    R2.2 — IGNORE THIS RULE 
         
 3. Sourcing & Balance  
-    R3.1
-    R3.2 — No statistic without source and timeframe.  
-    R3.3 — Include dissent or flag its absence.
+    R3.1 — IGNORE THIS RULE
+    R3.2 — IGNORE THIS RULE
+    R3.3 — IGNORE THIS RULE
     
 4. Soundbite Selection  
-    R4.1 - Sync that discusses the subject is important and is a priority
-    R4.2 — Prefer specific over general.  
-    R4.3 — Use the shortest sufficient quote.  
-    R4.4 — Do not change meaning by cutting.  
-    R4.5 — One idea per beat.
-    R4.6 - Ideas must be completed. e.g a a question receives an answer
+    R4.1 — IGNORE THIS RULE
+    R4.2 — IGNORE THIS RULE
+    R4.3 — IGNORE THIS RULE
+    R4.4 — IGNORE THIS RULE
+    R4.5 — IGNORE THIS RULE
+    R4.6 — IGNORE THIS RULE
     
 5. Metrics & Map Usage  
-    R5.1 — MAP synthetics are high prioirity. Always request one.  
-    R5.2 — Use a google map only if geography matters. spatial questions like "where...", "how far" can be considered geographical questions.  
-    R5.3 — MAP durations need to be as long as possible, without introducing clear recon errors. They need to cover `EVENT_ACTION`, `EVENT_TRIGGER` and `AFTERMATH` as long as this doesn't lead to extreme changes in location taht can't be reasonably mapped with a 3D reconstruction
-    R5.4 — Where people are and where they go can be covered by a MAP. Use RECON_3D if something fast is happening that will be missed by the low sample rate of the map. 
-    R5.5 — Use the map to show the location of key people.
+    R5.1 — IGNORE THIS RULE
+    R5.2 — IGNORE THIS RULE
+    R5.3 — IGNORE THIS RULE
+    R5.4 — IGNORE THIS RULE
+    R5.5 — IGNORE THIS RULE
+    R5.6 — IGNORE THIS RULE
     
     
 6. Structure & Pacing  
-    R6.1 — Do not open with out-of-order soundbites, hooks or teasers
-    R6.2 — `ESTABLISHER` must be less than 10s, get into  `EVENT` archetyes fast. This doesn't need to come from the first 10s of the video.  
-    R6.3 — Keep one throughline - which answers the user's prompt.  
-    R6.4 — Cut to information density, not rhythm.  
-    R6.5 — Separate data beats with other content  
-    R6.6 — Maps cannot open unless geography is the story.  
-    R6.7 — Never end on a geographic map
-    R6.8 — `PROJECTION` are action replays. They either go after the real beat that has the same source frames, or at the end of the video 
+    R6.1— IGNORE THIS RULE
+    R6.2 — IGNORE THIS RULE
+    R6.3 — IGNORE THIS RULE
+    R6.4 — IGNORE THIS RULE
+    R6.5 — IGNORE THIS RULE
+    R6.6 — IGNORE THIS RULE
+    R6.7 — IGNORE THIS RULE 
+    R6.8 — IGNORE THIS RULE
         
 7. Decision Reporting  
-    R7.1 — Name  rejected alternatives and why.  
-    R7.2 — Mark unresolved choices as [JUDGMENT CALL].
-    R7.3 — Report if the transcript/narration makes a factual claim (e.g. subject identity) that the deterministic tracking/mask data contradicts or cannot confirm. State that the fact is [CONTESTED] and present the contradiction
+    R7.1 — IGNORE THIS RULE
+    R7.2 — IGNORE THIS RULE
+    R7.3 — IGNORE THIS RULE
     
 8. Graphics
-    R8.1 — Captions must not cover the subject/action and must stay in safe area. The agent only decides whether a caption belongs and what it says; placement and line count are computed.
+    R8.1 — IGNORE THIS RULE
 
 9. Editorial
-    R9.1 — Every beat must have a strong reason to be included. This test does not apply to beats this constitution explicitly commands you to include (e.g. R5.1's mandatory MAP beat) — those are never removed on justification grounds. For every other beat: if the answer to the brief will not change when you remove it, remove it. 
+    R9.1 — — IGNORE THIS RULE
 
 10. Analysis
-    R10.1 —  Audio claims should be backed-up by video proof. Request Mask overlays to identfy key people and objects if they are critical to resolve the prompt. flag: [NEEDS VISUAL REVIEW] on this beat
-    R10.2 — Use a metric only if it adds something new.
-    R10.3 — Metrics support claims; they do not replace sourcing.
-    R10.4 — Physics-based analysis (speed, distance, etc) requires depth, so you must demand 3D recon to solve this
-    R10.5 — Metrics can and will support the answer to the prompt. use many, but they must satisfy R10.2 and 
+    R10.1 — IGNORE THIS RULE
+    R10.2 — IGNORE THIS RULE
+    R10.3 — IGNORE THIS RULE
+    R10.4 — IGNORE THIS RULE
+    R10.5 — IGNORE THIS RULE
    
-Draft v5 — edit freely. Keep IDs stable.
+Draft v7 — edit freely. Keep IDs stable.

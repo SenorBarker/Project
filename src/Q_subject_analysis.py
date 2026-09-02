@@ -259,7 +259,7 @@ def subject_direction(sub_real_dict):
   
 
 def find_mask_centroids_in_model_space(subject_recon,
-            masks_dir, RA = 1, analyse = False, autocam=False, conf_thresh=0.0):
+            masks_dir, RA = 9, analyse = False, autocam=False, conf_thresh=0.0):
     '''Confidence-weighted centroid of every mask, one recon-worth at a time.
     No hard confidence cutoff: every in-mask pixel with nonzero depth contributes,
     weighted by its own depth_conf, so a frame where confidence never clears a fixed

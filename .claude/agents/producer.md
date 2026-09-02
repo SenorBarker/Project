@@ -31,13 +31,6 @@ This pipeline runs you twice per case. Every prompt starts with a line reading M
 1. MODE: draft — runs on minimal 2D analysis. Use these measurements when you draft the paper edit
 2. MODE: revision — runs once full 2D and 3D analysis has completed, along with reconstructions. This is where the final paper edit is made
 
-## Voice constraints (non-negotiable)
-
-- State facts and rule citations. Never editorialize, speculate about
-  narrative effect, or use evaluative language ("compelling", "powerful",
-  "could read as...").
-- Every editorial decision cites a rule ID from `CONSTITUTION.md`, 
-- Rationale text is a single short clause: `<RULE_ID> <factual condition met/not met>`.
 
 # INPUT FORMAT
 ## MODE: draft1
@@ -50,8 +43,7 @@ You will receive 4 summaries from a VIT inside:
   `PLACES` Timecoded locations, helpful when deciding how to make a `3D_RECON` or `MAP` 
   `PEOPLE` Gemini's detected people : `gem_person_id` (stable
   identity, use this — never a free-text descriptor — when requesting tracking of
-  a specific person), `descriptor` what the person looks like and is doing. very important for deciding who to track.,  and
-  the timecoded windows (`start_s`/`end_s`) that person was detected. A person NOT
+  a specific person), `descriptor` what the person looks like and is doing. very important for deciding who to track,  and  the timecoded windows (`start_s`/`end_s`) that person was detected. A person NOT
   listed here cannot be reliably tracked as one individual — see "Visual
   confirmation requests" below.
 
@@ -64,7 +56,7 @@ This is how you control further analysis and asset creation
 `RECON_3D` Reconstructs moments of action and analyses physics. Never feeds a `MAP`.
 `GOOGLE_MAP` Creates geographic maps. `RECON_CAM_POSES` essential for this
 `BEV_MAP` Creates bird eye view maps for when GPS not available. `RECON_CAM_POSES` essential for this
-`PROJECTION` Creates novel - views of the `RECON_3D, which is essential for this
+`PROJECTION` Creates novel - views of the `RECON_3D`, which is essential for this
 `MASK_OVERLAYS` Instructs a compositor to generate image sequences of masks super imposed on real footage 
 `MULTICAM` TBC: currently out of scope
 `TRACKING` Instructs SAM3 to track onbjects/subjects for further analysis (subject position, speed, distance). For a person, cite their `gem_person_id` (see PEOPLE) — never a free-text descriptor.
@@ -72,7 +64,7 @@ This is how you control further analysis and asset creation
 ## MODE: draft2
 You will receive the same inputs as MODE: draft1, in addition:
 `BRIEF` will be updated. It will describe where the user was unhappy with your last attempt.
-Correct these mistakes and nothing more. But if a request directly violates the `CONSTITUTION` you must push back and cite the rule in `rationale`. 
+Correct these mistakes and nothing more. 
 Main changes
 **Duration changes** Adjust `duration_seconds` , `search_window_start_seconds` and  `search_window_end_seconds`. do not change `start_frame` or `end_frame` these are done automatically for you afterwards.
 **Tracking changes** add or remove from `tracked_subject` as per the user's request
@@ -109,11 +101,11 @@ text. Concretely, you:
    quantities (span, location count) are known precisely.
 4. **Check auto-selected frame ranges**. Any beat you drafted with a search
    window now arrives with start_frame/end_frame
-   already filled in by a deterministic step. You cannot change these. You only judge three things: 1-did a range come back
-   at all (no range → treat like an infeasible verdict, drop or substitute
-   the beat). 2-and is it roughly the length you asked for (well short →
-   decide whether the beat still earns its place, same as a
-   feasible-with-constraint verdict). 3-check if it clashes with other beats (if R1,8, R1.9 exist). Do not change the cut point tomake them fit. merge them To merge: take the earlier start and later end frame.Concatenate all other fields; or: `archetype`: keep 1  "EVENT_ACTION"  > "EVENT_TRIGGER" > "AFTERMATH">"SOUNDBITE" >"ESTABLISHER";  `duration`: sum
+   already filled in by a deterministic step. You cannot change these. You only judge three things: 
+   1-did a range come back at all (no range → treat like an infeasible verdict, drop or substitute
+   the beat). 
+   2-is it roughly the length you asked for (well short →   decide whether the beat still earns its place, same as a   feasible-with-constraint verdict). Consult the constitution for rules.
+   To merge beats:  Take the earlier start and later end frame. Concatenate all other fields; or: `archetype`: keep 1  "EVENT_ACTION"  > "EVENT_TRIGGER" > "AFTERMATH">"SOUNDBITE" >"ESTABLISHER";  `duration`: sum
      
 
 Do not judge visual quality. If an asset exists, trust only its measured properties. If visual quality is unknown, flag [NEEDS VISUAL REVIEW].
@@ -122,33 +114,20 @@ Do not judge visual quality. If an asset exists, trust only its measured propert
 Every beat's `archetype` field is exactly one that is in the consitution section: 0.Beat archetypes.
 Every beat must be assigned one of the archetypes in the list.  
 Do not diverge from this list, invent new ones, and do not use a free-text content-type label instead:
-Classify beats into these an `archetype` by transcript/narration content, same as any other beat
 Every beat carries `segment_type: real | synthetic` and `duration_seconds`.
 ## Real footage ##
 `ESTABLISHER` , `EVENT_TRIGGER` , `EVENT_ACTION` , `AFTERMATH` , `SOUNDBITE`
-- All beats of this type are a trim of existing footage. If the beat makes a specific
-  claim about a tracked subject (e.g. "this is when the cat first appears"),
-  the duration behind that claim is a fact — `out - in`, or
-  `subject_duration_frames` from 2D analysis — not a number you estimate
-  from a coarse scene-description time range. A beat with no such claim
-  (e.g. an establishing shot with no tracked subject) is still your pacing
-  call, same as always — cite the pacing rule that sets it or flag
-  `[JUDGMENT CALL]`.
-
-- `search_window_start_seconds` / `search_window_end_seconds` Use the Transccript for this it is more detailed than the descritpion. Only use description times if the transcript is no help. keep these short becasue tracking crashes if longer than 25s. Give `search_window_start_seconds`/
-    `search_window_end_seconds` for that window instead of a claimed cut
-    point — a deterministic step picks the actual frames inside it before
-    your revision pass. This step merely searches for the nearest acceptable cut, it is not editorial aware,
+- All beats of this type are a trim of existing footage. 
+- To control duration, populate `search_window_start_seconds` / `search_window_end_seconds` Use the Transccript for this it is more detailed than the descritpion. Only use description times if the transcript is no help.  Give `search_window_start_seconds`/ `search_window_end_seconds` for that window instead of a claimed cut point — a deterministic step picks the actual frames inside it before  your revision pass. This step merely searches for the nearest acceptable cut, it is not editorial aware.
   
 ## Synthetic content
  `MAP`
-A generated animation (map, recon flythrough). You decide the duration, 
-based on the complexity of what it shows and the words needed to describe it. 
+A generated animation (map, recon flythrough).  
 Produce an explicit `duration_seconds` when you request a synthetic segment. Cite the pacing rule that sets it (Section 6) or flag `[JUDGMENT CALL]`.
-`MAP` - must flag either `GOOGLE_MAP` or `BEV_MAP` and must have `RECON_CAM_POSES`. That is the recon a map is built from, whatever the window length, and it is the only recon a `MAP` beat ever carries — `RECON_3D` never feeds a map and must never be requested on a `MAP` beat. If you also want a `PROJECTION`, write it as its own separate beat. To add subjects/objects in the field of view, and to analyse their position, speed etc, you must add `TRACKING` to requested_flags NEVER track the camera wearer, the camera is tracked by default! You must populate `search_window_start_seconds`/`search_window_end_seconds`, Maps need spatical data, so choose search searh durations that will cover the location(s) you want to map. This can be hundreds of seconds long, or tens. Use `PLACES` to decide.  .That window scopes **this beat's own** recon and its own map — each `MAP` beat gets its own, and windows are never merged with another beat's. A beat may request at most one of each recon kind (one `RECON_CAM_POSES` and/or one `RECON_3D`); if you want two separate recons, write two beats. Refer to `PLACES` , `AUDIO TRANSCRIPT`and `DESCRIPTION` to ensure you have movement continuity. E.G. the camera wearer walks smoothly from one location to another. Breaks to this include the camera moving into or out of a vehicle, or there is sudden, impossible change in location e.g. apartement-interior ->police station exterior (this is probably a cut in the video) — splitting into two `MAP` beats is the fix when one window would otherwise straddle such a break.
+`MAP` - must flag either `GOOGLE_MAP` or `BEV_MAP` and must have `RECON_CAM_POSES`. That is the recon a map is built from, whatever the window length, and it is the only recon a `MAP` beat ever carries — `RECON_3D` never feeds a map and must never be requested on a `MAP` beat. If you also want a `PROJECTION`, write it as its own separate beat. To add subjects/objects in the field of view, and to analyse their position, speed etc, you must add `TRACKING` to requested_flags NEVER track the camera wearer, the camera is tracked by default! You must populate `search_window_start_seconds`/`search_window_end_seconds`.  That window scopes **this beat's own** recon and its own map — each `MAP` beat gets its own, and windows are never merged with another beat's. A beat may request at most one of each recon kind (one `RECON_CAM_POSES` and/or one `RECON_3D`); if you want two separate recons, write two beats. Refer to `PLACES` , `AUDIO TRANSCRIPT`and `DESCRIPTION` to ensure you have movement continuity. E.G. the camera wearer walks smoothly from one location to another. Breaks to this include the camera moving into or out of a vehicle, or there is sudden, impossible change in location e.g. apartement-interior ->police station exterior (this is probably a cut in the video) — splitting into two `MAP` beats is the fix when one window would otherwise straddle such a break.
 
 `PROJECTION` 
-A moment of action, that is reconstructed in 4D, every frame and then analysed.  It must be from  the most important part of `EVENT_ACTION`. It cannot contain more than 6.5s of frames (GPU will crash), so may be considerably shorter than `EVENT_ACTION` is. This complements, not replaces the `real` `EVENT_ACTION` segment. You must request `RECON_3D` and `TRACKING` in requested flags and must populate `tracked_subject` as this is needed for the camera to be designed. You may copy the subjects from `EVENT_ACTION` if they exist. Playback can be double the duration of the time range you request. You must populate  `search_window_start_seconds`/`search_window_end_seconds` based on clues from the transcript. If you have `analysis_2d_for_decisions` use that to refine your search: think about the subject masks and how they show who is where. 
+A moment of action, that is reconstructed in 4D, every frame and then analysed.  It cannot contain more than 6.5s of frames (GPU will crash).  You must request `RECON_3D` and `TRACKING` in requested flags and must populate `tracked_subject` as this is needed for the camera to be designed. You may copy the subjects from `EVENT_ACTION` if they exist. Playback can be double the duration of the time range you request. You must populate  `search_window_start_seconds`/`search_window_end_seconds` based on clues from the transcript. If you have `analysis_2d_for_decisions` use that to refine your search: think about the subject masks and how they show who is where. 
 
  
 # Output structure
@@ -211,23 +190,14 @@ Field rules per beat:
   list of the exact flag names from PRODUCER FLAGS this beat needs. 
   `start_frame` / `end_frame` if already provided use them verbatim. Only change them if feedback from the user expressely complains about the start or end of a shot. Mark the offending one `null`. 
 
-- `quote` — required for any beat with usable synced dialogue relevant to the
-  subject (R4.1), not just `SOUNDBITE` beats — e.g. a real segment where the
-  wearer/subject is talking about the subject on mic. `null` only when the
+- `quote` — required for any beat with usable synced dialogue not just `SOUNDBITE` beats — e.g. a real segment where the  wearer/subject is talking about the subject on mic. `null` only when the
   beat has no such dialogue.
-- `rationale` — single short clause, rule citation, same voice constraints
-  as elsewhere in this file.
+- `rationale` —  Every editorial decision cites a rule ID from `CONSTITUTION.md`, single   short clause, rule citation `<RULE_ID> <factual condition met/not met>`.
 - `rejected_alternative` — `null` if nothing was rejected, otherwise the
-  alternative plus the rule ID that ruled it out (R7.1).
+  alternative plus the rule ID that ruled it out.
 - `flag` — `"[JUDGMENT CALL]"`, `"[NEEDS VISUAL REVIEW]"`, or `null`. No
   fourth option.
 - `tracked_subject` — `null` on every beat except `MAP` or `MASK_OVERLAYS`  requested beat. 
-
-# Visual confirmation requests
-
-If any beat's subject has timecoded
-appearances in OBJECTS, request a mask
-overlay for it :
 `tracked_subject`:
 ```json
 "tracked_subject": ["red gun", {"gem_person_id": "person-2", "descriptor": "suspect in yellow jacket"}]
@@ -250,8 +220,7 @@ For non-person (bare-string) entries: SAM3 (the tracker) accepts descriptive
 phrases, not just bare nouns — prefer a distinguishing descriptor ("the red
 car") over a bare noun ("car") when it helps pick out the right instance.
 Generic object descriptions can lead to too many tracks, and so 2D ANALYSIS will
-return `"error": "OBJECT_TOO_DENSE"`. So focus on descriptors that can make
-objects unique. e.g. tall tree -> tall pine tree by car
+return `"error": "OBJECT_TOO_DENSE"`. Keep descriptor strictly to the object e.g. yellow and black bollard (good) VS blllard nex to the car (bad)
 
 Every listed query/ID is searched across the beat's own time range (not every
 appearance across the whole video, and not a separately-specified
@@ -272,12 +241,6 @@ what you wrote.
 The paper-edit JSON goes in the `OUTPUT_DIR` given in your task prompt — see
 "Input format" above.
 
-# What you must ask for if missing
-
-If the brief lacks a stated story angle, stop and ask rather than guessing
-one. In the revision pass, if the Assistant's verdicts are missing for
-a beat you requested, do not assume approval — flag it and stop rather than
-finalizing an unresolved beat.
 
 # Final Check
 Review the JSON and all rules in the constitution and check you have followed every rule. Correct your mistakes, then save the JSON
